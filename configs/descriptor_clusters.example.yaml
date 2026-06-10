@@ -1,0 +1,21 @@
+descriptor_groups:
+  constitution:
+    atom_count:
+      - HeavyAtomCount
+      - NumHAcceptors
+      - NumHDonors
+    molecular_size:
+      - MolWt
+      - ExactMolWt
+  topology:
+    connectivity:
+      - Chi0
+      - Chi1
+    complexity:
+      - BertzCT
+  polarity:
+    surface:
+      - TPSA
+    partition:
+      - MolLogP
+

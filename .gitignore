@@ -1,0 +1,41 @@
+# Local data
+*.sqlite
+*.sqlite3
+*.db
+data/raw/
+data/cache/
+USER.txt
+
+# Generated outputs
+outputs/
+artifacts/
+models/
+checkpoints/
+runs/
+wandb/
+mlruns/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Local environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Editors and OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

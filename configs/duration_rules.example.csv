@@ -1,0 +1,5 @@
+endpoint,effect,taxon_group,medium,exposure_route,duration_h,source,confidence
+LC50,Mortality,Fish,Water,Aquatic,96,common acute fish toxicity practice,medium
+EC50,Immobilization,Crustacea,Water,Aquatic,48,common daphnia acute immobilization practice,medium
+NOEC,Growth,Algae,Water,Aquatic,72,common algal growth inhibition practice,medium
+

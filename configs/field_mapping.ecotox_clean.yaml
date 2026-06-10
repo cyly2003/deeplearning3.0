@@ -1,0 +1,111 @@
+tables:
+  chemicals: chemicals
+  chemical_categories: chemical_category_curated
+  chemical_smiles: chemical_smiles_dictionary
+  references: references
+  results: results
+  species: species
+  species_categories: species_category_curated
+  species_habitat: species_habitat_annotations
+  tests: tests
+
+joins:
+  tests_to_results:
+    left: tests.test_id
+    right: results.test_id
+  tests_to_chemicals:
+    left: tests.test_cas
+    right: chemicals.cas_number
+  tests_to_species:
+    left: tests.species_number
+    right: species.species_number
+  tests_to_references:
+    left: tests.reference_number
+    right: references.reference_number
+  species_to_curated_category:
+    left: species.species_number
+    right: species_category_curated.species_number
+  species_to_habitat:
+    left: species.species_number
+    right: species_habitat_annotations.species_number
+  chemicals_to_curated_category:
+    left: chemicals.cas_number
+    right: chemical_category_curated.cas_number
+  chemicals_to_smiles_dictionary:
+    left: chemicals.cas_number
+    right: chemical_smiles_dictionary.cas_number
+
+fields:
+  identifiers:
+    result_id: results.result_id
+    test_id: tests.test_id
+    reference_number: tests.reference_number
+    cas_number: tests.test_cas
+    species_number: tests.species_number
+  chemical:
+    chemical_name: chemicals.chemical_name
+    ecotox_group: chemicals.ecotox_group
+    dtxsid: chemicals.dtxsid
+    smiles: chemicals.smiles
+    molecular_weight_rdkit_g_mol: chemicals.molecular_weight_rdkit_g_mol
+    molecular_weight_g_mol: chemicals.molecular_weight_g_mol
+    molecular_weight_source: chemicals.molecular_weight_source
+    molecular_weight_status: chemicals.molecular_weight_status
+    chemical_class_l1: chemical_category_curated.chemical_class_l1
+    chemical_class_l2: chemical_category_curated.chemical_class_l2
+    chemical_class_l3: chemical_category_curated.chemical_class_l3
+  species:
+    latin_name: species.latin_name
+    common_name: species.common_name
+    kingdom: species.kingdom
+    phylum: species.phylum_division
+    class_name: species.class
+    order: species.tax_order
+    family: species.family
+    genus: species.genus
+    species: species.species
+    ecotox_group: species.ecotox_group
+    ncbi_taxid: species.ncbi_taxid
+    primary_medium: species.primary_medium
+    habitat_labels: species.habitat_labels
+    taxon_group_l1: species_category_curated.taxon_group_l1
+    taxon_group_l2: species_category_curated.taxon_group_l2
+    taxon_group_l3: species_category_curated.taxon_group_l3
+  exposure:
+    organism_habitat: tests.organism_habitat
+    organism_lifestage: tests.organism_lifestage
+    media_type: tests.media_type
+    exposure_duration_mean: tests.exposure_duration_mean
+    exposure_duration_unit: tests.exposure_duration_unit
+    exposure_duration_mean_h: tests.exposure_duration_mean_h
+    exposure_duration_min_h: tests.exposure_duration_min_h
+    exposure_duration_max_h: tests.exposure_duration_max_h
+    exposure_duration_standardization_status: tests.exposure_duration_standardization_status
+    num_doses_mean: tests.num_doses_mean
+    num_doses_min: tests.num_doses_min
+    num_doses_max: tests.num_doses_max
+  result:
+    endpoint: results.endpoint
+    effect: results.effect
+    measurement: results.measurement
+    endpoint_comments: results.endpoint_comments
+    trend: results.trend
+    obs_duration_mean: results.obs_duration_mean
+    obs_duration_unit: results.obs_duration_unit
+    obs_duration_mean_h: results.obs_duration_mean_h
+    obs_duration_standardization_status: results.obs_duration_standardization_status
+    conc1_type: results.conc1_type
+    conc1_mean_op: results.conc1_mean_op
+    conc1_mean: results.conc1_mean
+    conc1_min_op: results.conc1_min_op
+    conc1_min: results.conc1_min
+    conc1_max_op: results.conc1_max_op
+    conc1_max: results.conc1_max
+    conc1_unit: results.conc1_unit
+    conc1_mean_standardized: results.conc1_mean_standardized
+    conc1_min_standardized: results.conc1_min_standardized
+    conc1_max_standardized: results.conc1_max_standardized
+    conc1_standard_unit: results.conc1_standard_unit
+    conc1_unit_family: results.conc1_unit_family
+    conc1_standardization_status: results.conc1_standardization_status
+

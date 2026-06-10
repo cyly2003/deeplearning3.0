@@ -1,0 +1,29 @@
+tables:
+  chemicals: chemicals
+  tests: tests
+  results: results
+  species: species
+  taxonomy: taxonomy
+
+fields:
+  chemical_id: chemicals.chemical_id
+  cas: chemicals.cas
+  smiles: chemicals.smiles
+  molecular_weight: chemicals.molecular_weight
+  species_id: species.species_id
+  scientific_name: species.scientific_name
+  test_id: tests.test_id
+  result_id: results.result_id
+  medium: tests.medium
+  exposure_route: tests.exposure_route
+  duration_value: tests.duration_value
+  duration_unit: tests.duration_unit
+  endpoint: results.endpoint
+  effect: results.effect
+  effect_level: results.effect_level
+  tox_mean: results.tox_mean
+  tox_min: results.tox_min
+  tox_max: results.tox_max
+  tox_unit: results.tox_unit
+  dose_group_count: results.dose_group_count
+

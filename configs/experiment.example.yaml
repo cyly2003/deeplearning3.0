@@ -1,0 +1,135 @@
+project:
+  name: ecotox_qsar_transfer_example
+  seed: 42
+
+paths:
+  sqlite_db: ecotox_clean.sqlite
+  output_dir: outputs/experiments/example
+  logs_dir: outputs/logs
+
+execution:
+  mode: remote
+  local_python: E:/TOOLS/anaconda/envs/qsar-ph3/python.exe
+  remote:
+    host: your.remote.host
+    user: your_user
+    project_dir: /home/your_user/ecotox_qsar_transfer
+    python: /home/your_user/miniconda/envs/qsar/bin/python
+    sync_data: true
+    pull_outputs: true
+
+data:
+  field_mapping: configs/field_mapping.ecotox_clean.yaml
+  build_wide_table: true
+  aggregation:
+    strategy: strict_duration_tolerance
+    duration_tolerance_relative: 0.002
+    duration_tolerance_hours_min: 0.05
+  duration_imputation:
+    strategy: standard_rule_then_group_mode
+    rules_table: configs/duration_rules.example.csv
+
+targets:
+  toxicity:
+    value_rule: mean_then_min_max_midpoint
+    min_dose_groups_for_midpoint: 3
+    ignore_qualifiers: true
+  medium_units:
+    aquatic:
+      model_target: ptox_mol_l
+      export_units:
+        - mg/L
+        - mol/L
+    soil:
+      model_target: neg_log10_mg_kg
+      export_units:
+        - mg/kg
+    sediment:
+      model_target: neg_log10_mg_kg
+      export_units:
+        - mg/kg
+    oral:
+      model_target: neg_log10_mg_kg_bw
+      task_group: auxiliary
+
+features:
+  molecule:
+    encoder: rdkit_descriptor_morgan
+    descriptor_cluster_file: configs/descriptor_clusters.example.yaml
+    morgan_radius: 2
+    morgan_n_bits: 2048
+  species:
+    encoder: taxonomy_context
+    taxonomy_levels:
+      - kingdom
+      - phylum
+      - class
+      - order
+      - family
+      - genus
+      - species
+    context_fields:
+      - life_stage
+      - habitat
+      - primary_medium
+      - exposure_route
+      - duration_h
+      - log1p_duration_h
+
+tasks:
+  main_heads:
+    - ECx_Mortality
+    - ECx_Growth
+    - ECx_Reproduction
+    - NOEC_Growth
+    - LOEC_Reproduction
+  auxiliary_heads:
+    bioaccumulation:
+      enabled: true
+      heads:
+        - logBCF
+        - logBAF
+      loss_mask: observed_only
+    oral:
+      enabled: true
+      target: neg_log10_mg_kg_bw
+
+model:
+  hidden_dim: 256
+  dropout: 0.15
+  activation: gelu
+
+training:
+  batch_size: 256
+  epochs: 100
+  learning_rate: 0.0003
+  loss:
+    name: huber
+    delta: 1.0
+  task_weights:
+    ECx_Mortality: 1.0
+    ECx_Growth: 1.0
+    ECx_Reproduction: 1.0
+    NOEC_Growth: 1.0
+    LOEC_Reproduction: 1.0
+    logBCF: 0.3
+    logBAF: 0.3
+    oral: 0.3
+
+evaluation:
+  splits:
+    - random_split
+    - chemical_group_split
+    - species_group_split
+    - chemical_species_group_split
+    - medium_transfer_split
+  metrics:
+    - r2
+    - rmse
+    - mae
+    - huber_loss
+  explainability:
+    enabled: true
+    methods:
+      - permutation_importance
+      - shap
