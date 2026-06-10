@@ -20,6 +20,26 @@
 - CLI 入口：`python -m qsar_tl.cli`
 - GUI 入口：`python -m qsar_tl.gui.app`
 
+## Current Data Build Commands
+
+数据库结构扫描：
+
+```powershell
+E:\TOOLS\anaconda\python.exe scripts\scan_sqlite_schema.py --db ecotox_clean.sqlite --out docs\database_schema_scan.md
+```
+
+数据库关键字段画像：
+
+```powershell
+E:\TOOLS\anaconda\python.exe scripts\profile_ecotox_clean.py --db ecotox_clean.sqlite --out docs\database_profile.md
+```
+
+构建小规模建模宽表与目标变量表：
+
+```powershell
+E:\TOOLS\anaconda\python.exe -m qsar_tl.cli build-modeling-tables --config configs\experiment.example.yaml --limit 10000
+```
+
 ## Environment
 
 用户当前常用 Python：
@@ -42,4 +62,3 @@ E:\TOOLS\anaconda\envs\qsar-ph3
 - 项目根目录路径
 - SQLite 数据库路径
 - 远程服务器 SSH 主机名、用户名、项目目录和训练环境
-

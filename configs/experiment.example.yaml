@@ -20,6 +20,8 @@ execution:
 
 data:
   field_mapping: configs/field_mapping.ecotox_clean.yaml
+  modeling_tables_db: outputs/derived/modeling_dataset.sqlite
+  build_batch_size: 10000
   build_wide_table: true
   aggregation:
     strategy: strict_duration_tolerance

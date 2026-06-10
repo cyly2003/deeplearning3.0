@@ -45,6 +45,34 @@ E:\TOOLS\anaconda\python.exe -m qsar_tl.cli run --config configs\experiment.exam
 4. 下一步实现建模宽表构建模块。
 5. 下一步实现目标变量单位换算和剔除原因记录。
 
+## 本轮继续目标
+
+- 已新增建模宽表和目标变量构建模块：`qsar_tl/data/modeling_tables.py`。
+- 已新增 CLI 命令：`python -m qsar_tl.cli build-modeling-tables --config configs\experiment.example.yaml --limit 10000`。
+- 第一版目标构建只纳入已标准化单位：
+  - `water_mg_l` 转换为 `ptox_mol_l`
+  - `water_mol_l` 转换为 `ptox_mol_l`
+  - `soil_mg_kg` 转换为 `neg_log10_mg_kg`
+  - `oral_mg_kg_d` 转换为 `neg_log10_mg_kg_bw_day`
+- 其他单位暂时进入 `excluded_reason`，避免不可靠数据进入训练。
+
+## 完整建模表构建结果
+
+已运行：
+
+```powershell
+E:\TOOLS\anaconda\python.exe -m qsar_tl.cli build-modeling-tables --config configs\experiment.example.yaml
+```
+
+结果：
+
+- `wide_records`: 1,234,077
+- `target_records`: 1,234,077
+- `included_targets`: 510,934
+- `excluded_targets`: 723,143
+
+详细报告见：`docs/modeling_table_build_report.md`。
+
 ## GitHub 备份策略
 
 - 本地数据库 `ecotox_clean.sqlite` 已通过 `.gitignore` 排除，不提交到 GitHub。
