@@ -25,20 +25,35 @@
 数据库结构扫描：
 
 ```powershell
-E:\TOOLS\anaconda\python.exe scripts\scan_sqlite_schema.py --db ecotox_clean.sqlite --out docs\database_schema_scan.md
+python scripts\scan_sqlite_schema.py --db ecotox_clean.sqlite --out docs\database_schema_scan.md
 ```
 
 数据库关键字段画像：
 
 ```powershell
-E:\TOOLS\anaconda\python.exe scripts\profile_ecotox_clean.py --db ecotox_clean.sqlite --out docs\database_profile.md
+python scripts\profile_ecotox_clean.py --db ecotox_clean.sqlite --out docs\database_profile.md
 ```
 
 构建小规模建模宽表与目标变量表：
 
 ```powershell
-E:\TOOLS\anaconda\python.exe -m qsar_tl.cli build-modeling-tables --config configs\experiment.example.yaml --limit 10000
+python -m qsar_tl.cli build-modeling-tables --config configs\experiment.example.yaml --limit 10000
 ```
+
+构建任务头和条件聚合样本：
+
+```powershell
+python -m qsar_tl.cli build-task-tables --config configs\experiment.example.yaml
+```
+
+生成 split 并运行基线：
+
+```powershell
+python -m qsar_tl.cli generate-split --config configs\experiment.example.yaml --split-name random_v1 --split-type random_split
+python -m qsar_tl.cli run-baseline --config configs\experiment.example.yaml --split-name random_v1 --model random_forest --out outputs\experiments\baseline_random_v1_metrics.csv
+```
+
+所有路径均可通过配置文件或 CLI 参数覆盖，远程训练时不依赖本机盘符路径。
 
 ## Environment
 

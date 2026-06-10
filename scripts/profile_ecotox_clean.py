@@ -61,7 +61,7 @@ def profile(sqlite_db: Path) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Profile key categorical fields in ecotox_clean.sqlite.")
+    parser = argparse.ArgumentParser(description="Profile key categorical fields in an ECOTOX SQLite database.")
     parser.add_argument("--db", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     return parser
@@ -77,4 +77,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

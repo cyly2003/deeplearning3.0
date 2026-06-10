@@ -24,13 +24,13 @@
 ## 已验证命令
 
 ```powershell
-E:\TOOLS\anaconda\python.exe -m qsar_tl.cli validate-config --config configs\experiment.example.yaml
+python -m qsar_tl.cli validate-config --config configs\experiment.example.yaml
 ```
 
 结果：配置读取成功。
 
 ```powershell
-E:\TOOLS\anaconda\python.exe -m qsar_tl.cli run --config configs\experiment.example.yaml --dry-run
+python -m qsar_tl.cli run --config configs\experiment.example.yaml --dry-run
 ```
 
 结果：成功生成远程训练 dry-run 命令。
@@ -61,7 +61,7 @@ E:\TOOLS\anaconda\python.exe -m qsar_tl.cli run --config configs\experiment.exam
 已运行：
 
 ```powershell
-E:\TOOLS\anaconda\python.exe -m qsar_tl.cli build-modeling-tables --config configs\experiment.example.yaml
+python -m qsar_tl.cli build-modeling-tables --config configs\experiment.example.yaml
 ```
 
 结果：
@@ -72,6 +72,41 @@ E:\TOOLS\anaconda\python.exe -m qsar_tl.cli build-modeling-tables --config confi
 - `excluded_targets`: 723,143
 
 详细报告见：`docs/modeling_table_build_report.md`。
+
+## 并行框架补全进度
+
+- 已新增任务头映射与聚合样本框架：`qsar_tl/data/task_mapping.py`、`qsar_tl/data/task_tables.py`。
+- 已新增 split 与传统基线框架：`qsar_tl/evaluation/splits.py`、`qsar_tl/training/baseline.py`。
+- 已新增深度模型骨架：`qsar_tl/modeling/dataset.py`、`qsar_tl/modeling/network.py`、`qsar_tl/training/deep_train.py`。
+- 已重构 GUI 控制台框架：`qsar_tl/gui/app.py`、`qsar_tl/gui/widgets.py`、`qsar_tl/gui/job_model.py`、`qsar_tl/gui/process_runner.py`。
+- 路径约束：代码不写死本机盘符和解释器路径；数据库、输出和远程路径通过配置或 CLI 参数传入。
+
+### 框架验证结果
+
+已通过：
+
+```powershell
+python -m compileall qsar_tl scripts tests
+python -m pytest tests -q
+python -m qsar_tl.cli --help
+```
+
+测试结果：`17 passed, 1 skipped`。跳过项来自当前 base 环境的可选依赖差异；`qsar-ph3` 环境可运行 baseline 冒烟。
+
+已完成 CLI 冒烟：
+
+```powershell
+python -m qsar_tl.cli build-task-tables --config configs\experiment.example.yaml --db <derived_db> --limit 2000
+python -m qsar_tl.cli generate-split --config configs\experiment.example.yaml --db <derived_db> --split-name random_smoke --split-type random_split --limit 2000
+python -m qsar_tl.cli run-baseline --config configs\experiment.example.yaml --db <derived_db> --split-name random_smoke --model random_forest --limit 500 --out <metrics_csv>
+```
+
+真实全量聚合结果：
+
+- `task_records`: 510,934
+- 第一批严格纳入任务记录：202,678
+- `aggregated_task_records`: 80,725
+- 主要任务头：`ECx_Mortality`、`ECx_Population`、`NOEC_Growth`、`NOEC_Mortality`、`NOEC_Population`
 
 ## GitHub 备份策略
 
