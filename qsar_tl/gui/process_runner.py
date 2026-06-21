@@ -43,6 +43,7 @@ def build_remote_training_command(
     user: str,
     project_dir: str,
     remote_python: str,
+    port: int | None = None,
     remote_config_path: str | None = None,
 ) -> list[str]:
     remote = f"{user}@{host}"
@@ -52,7 +53,11 @@ def build_remote_training_command(
         f"{shlex.quote(remote_python)} -m qsar_tl.training.train "
         f"--config {shlex.quote(remote_config)}"
     )
-    return ["ssh", remote, remote_command]
+    command = ["ssh"]
+    if port is not None:
+        command.extend(["-p", str(port)])
+    command.extend([remote, remote_command])
+    return command
 
 
 def build_training_command(
@@ -63,6 +68,7 @@ def build_training_command(
     remote_user: str | None = None,
     remote_project_dir: str | None = None,
     remote_python: str | None = None,
+    remote_port: int | None = None,
 ) -> list[str]:
     if job.execution_mode == "local":
         return build_local_training_command(job.config_path, python_exe=local_python)
@@ -84,6 +90,7 @@ def build_training_command(
         user=remote_user or "",
         project_dir=remote_project_dir or "",
         remote_python=remote_python or "",
+        port=remote_port,
         remote_config_path=job.remote_config_path,
     )
 

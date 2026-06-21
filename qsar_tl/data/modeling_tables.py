@@ -6,13 +6,16 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable
 
+from qsar_tl.data.medium import classify_exposure_medium
 from qsar_tl.data.target_builder import build_target_from_standardized_value
+from qsar_tl.data.unit_normalizer import normalize_concentration_values
 
 
 WIDE_TABLE_COLUMNS = [
     "result_id",
     "test_id",
     "reference_number",
+    "publication_year",
     "cas_number",
     "species_number",
     "chemical_name",
@@ -57,11 +60,15 @@ WIDE_TABLE_COLUMNS = [
     "obs_duration_standardization_status",
     "conc1_type",
     "conc1_mean_op",
+    "conc1_mean",
     "conc1_mean_standardized",
     "conc1_min_op",
+    "conc1_min",
     "conc1_min_standardized",
     "conc1_max_op",
+    "conc1_max",
     "conc1_max_standardized",
+    "conc1_unit",
     "conc1_standard_unit",
     "conc1_unit_family",
     "conc1_standardization_status",
@@ -72,11 +79,33 @@ TARGET_COLUMNS = WIDE_TABLE_COLUMNS + [
     "tox_value",
     "tox_value_source",
     "tox_value_imputed",
+    "value_quality",
+    "unit_family_v2",
+    "standard_unit_v2",
+    "standard_value_mg_l",
+    "standard_value_mol_l",
+    "standard_value_mg_kg",
+    "standard_value_g_ha",
+    "standard_value_mg_kg_diet",
+    "standard_value_mg_kg_bw_day",
+    "unit_conversion_source",
+    "unit_conversion_confidence",
+    "unit_conversion_note",
+    "conversion_path",
+    "active_ingredient_basis",
+    "acid_equivalent_basis",
     "target_value",
     "target_name",
+    "target_family",
     "target_basis",
     "target_status",
     "excluded_reason",
+    "medium_domain",
+    "primary_medium_domain",
+    "medium_domains",
+    "medium_domain_detail",
+    "medium_domain_reason",
+    "medium_conflict_flag",
 ]
 
 
@@ -87,6 +116,7 @@ def wide_table_query(limit: int | None = None) -> str:
         r.result_id,
         t.test_id,
         t.reference_number,
+        ref.publication_year,
         t.test_cas AS cas_number,
         t.species_number,
         c.chemical_name,
@@ -131,16 +161,21 @@ def wide_table_query(limit: int | None = None) -> str:
         r.obs_duration_standardization_status,
         r.conc1_type,
         r.conc1_mean_op,
+        r.conc1_mean,
         r.conc1_mean_standardized,
         r.conc1_min_op,
+        r.conc1_min,
         r.conc1_min_standardized,
         r.conc1_max_op,
+        r.conc1_max,
         r.conc1_max_standardized,
+        r.conc1_unit,
         r.conc1_standard_unit,
         r.conc1_unit_family,
         r.conc1_standardization_status
     FROM results AS r
     JOIN tests AS t ON r.test_id = t.test_id
+    LEFT JOIN "references" AS ref ON t.reference_number = ref.reference_number
     LEFT JOIN chemicals AS c ON t.test_cas = c.cas_number
     LEFT JOIN chemical_category_curated AS cc ON CAST(t.test_cas AS TEXT) = cc.cas_number
     LEFT JOIN species AS s ON t.species_number = s.species_number
@@ -206,19 +241,41 @@ def build_modeling_tables(
                 wide_row = {column: row[column] for column in WIDE_TABLE_COLUMNS}
                 wide_rows.append(wide_row)
 
-                target = build_target_from_standardized_value(
-                    mean_value=row["conc1_mean_standardized"],
-                    min_value=row["conc1_min_standardized"],
-                    max_value=row["conc1_max_standardized"],
-                    dose_group_count=row["num_doses_mean"],
+                medium = classify_exposure_medium(
+                    organism_habitat=row["organism_habitat"],
+                    media_type=row["media_type"],
+                )
+                normalized_unit = normalize_concentration_values(
+                    standardized_mean=row["conc1_mean_standardized"],
+                    standardized_min=row["conc1_min_standardized"],
+                    standardized_max=row["conc1_max_standardized"],
                     unit_family=row["conc1_unit_family"],
                     standard_unit=row["conc1_standard_unit"],
+                    raw_mean=row["conc1_mean"],
+                    raw_min=row["conc1_min"],
+                    raw_max=row["conc1_max"],
+                    raw_unit=row["conc1_unit"],
                     molecular_weight_g_mol=row["molecular_weight_g_mol"]
                     or row["molecular_weight_rdkit_g_mol"],
-                    medium=row["media_type"] or row["organism_habitat"],
-                    min_dose_groups_for_midpoint=min_dose_groups_for_midpoint,
+                    organism_habitat=row["organism_habitat"],
+                    media_type=row["media_type"],
                 )
-                target_row = wide_row | asdict(target)
+                target = build_target_from_standardized_value(
+                    mean_value=normalized_unit.mean_value_v2,
+                    min_value=normalized_unit.min_value_v2,
+                    max_value=normalized_unit.max_value_v2,
+                    dose_group_count=row["num_doses_mean"],
+                    unit_family=normalized_unit.unit_family_v2,
+                    standard_unit=normalized_unit.standard_unit_v2,
+                    molecular_weight_g_mol=row["molecular_weight_g_mol"]
+                    or row["molecular_weight_rdkit_g_mol"],
+                    medium=medium.medium_domain,
+                    min_dose_groups_for_midpoint=min_dose_groups_for_midpoint,
+                    mean_op=row["conc1_mean_op"],
+                    min_op=row["conc1_min_op"],
+                    max_op=row["conc1_max_op"],
+                )
+                target_row = wide_row | asdict(normalized_unit) | asdict(target) | medium.to_row()
                 target_rows.append(target_row)
 
                 stats["wide_records"] += 1
@@ -238,7 +295,7 @@ def build_modeling_tables(
                 ("source_db", str(source_path)),
                 ("limit", "" if limit is None else str(limit)),
                 ("batch_size", str(batch_size)),
-                ("min_dose_groups_for_midpoint", str(min_dose_groups_for_midpoint)),
+                ("min_dose_groups_for_midpoint", "ignored"),
                 ("stats_json", json.dumps(stats, ensure_ascii=False, sort_keys=True)),
             ],
         )
@@ -247,13 +304,13 @@ def build_modeling_tables(
     return stats
 
 
-def summarize_target_table(output_db: str | Path) -> list[tuple[str | None, str | None, str | None, int]]:
+def summarize_target_table(output_db: str | Path) -> list[tuple[object, ...]]:
     with sqlite3.connect(output_db) as conn:
         return conn.execute(
             """
-            SELECT target_status, target_name, excluded_reason, COUNT(*) AS n
+            SELECT target_status, target_family, target_name, value_quality, excluded_reason, COUNT(*) AS n
             FROM target_records
-            GROUP BY target_status, target_name, excluded_reason
+            GROUP BY target_status, target_family, target_name, value_quality, excluded_reason
             ORDER BY n DESC
             """
         ).fetchall()

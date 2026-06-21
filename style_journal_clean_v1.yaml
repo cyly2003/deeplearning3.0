@@ -1,0 +1,330 @@
+# style_journal_clean_v1.yaml
+metadata:
+  style_name: "journal_clean_v1"
+  target_journals: ["EST/ACS-like", "JHM/Elsevier-like", "General environmental science"]
+  design_goal: "white background, weak grid, high readability, colorblind-friendly, publication-ready"
+  unit_note: "font size, linewidth, markersize are in pt; figure size is in mm"
+
+# -----------------------------
+# 1. 字体：严格禁止回退
+# -----------------------------
+fonts:
+  strict_mode: true
+  allow_fallback: false
+  on_missing_font: "raise_error"
+  check_glyph_coverage_before_plot: true
+  mixed_cn_en_policy: "split_into_separate_text_objects"
+
+  english:
+    family_name: "Arial"
+    regular: "C:/Windows/Fonts/arial.ttf"
+    bold: "C:/Windows/Fonts/arialbd.ttf"
+    italic: "C:/Windows/Fonts/ariali.ttf"
+    bold_italic: "C:/Windows/Fonts/arialbi.ttf"
+
+  chinese_sans:
+    family_name: "Microsoft YaHei"
+    regular: "C:/Windows/Fonts/msyh.ttc"
+    bold: "C:/Windows/Fonts/msyhbd.ttc"
+
+  chinese_serif_for_thesis_optional:
+    family_name: "SimSun"
+    regular: "C:/Windows/Fonts/simsun.ttc"
+    bold_replacement: "C:/Windows/Fonts/simhei.ttf"
+
+  font_usage:
+    journal_english_figures: "english"
+    chinese_thesis_figures: "chinese_sans"
+    chinese_thesis_captions_outside_figure: "chinese_serif_for_thesis_optional"
+    axis_numbers: "english"
+    chemical_symbols: "english"
+    panel_labels: "english"
+    legend_english: "english"
+    legend_chinese: "chinese_sans"
+
+  math_text:
+    preferred_policy: "avoid_mathtext_when_possible"
+    use_unicode_symbols:
+      r_squared: "R²"
+      micro: "µ"
+      minus: "−"
+      superscript_minus_one: "⁻¹"
+      degree: "°"
+    if_mathtext_is_unavoidable:
+      mathtext.fontset: "custom"
+      mathtext.rm: "Arial"
+      mathtext.it: "Arial:italic"
+      mathtext.bf: "Arial:bold"
+
+# -----------------------------
+# 2. Matplotlib 全局 rcParams
+# -----------------------------
+matplotlib_rc:
+  figure.dpi: 150
+  savefig.dpi: 600
+  savefig.bbox: "tight"
+  savefig.pad_inches: 0.035
+  savefig.transparent: false
+  pdf.fonttype: 42
+  ps.fonttype: 42
+  svg.fonttype: "none"
+  axes.unicode_minus: true
+  axes.formatter.use_mathtext: false
+  axes.facecolor: "#FFFFFF"
+  figure.facecolor: "#FFFFFF"
+
+# -----------------------------
+# 3. 推荐图幅尺寸
+# -----------------------------
+figure_sizes_mm:
+  single_column_square: [85, 85]
+  single_column_wide: [85, 65]
+  single_column_tall: [85, 105]
+  double_column_wide: [178, 105]
+  double_column_two_panel: [178, 135]
+  double_column_tall: [178, 155]
+  radar_dense_single: [90, 90]
+  radar_dense_double: [120, 120]
+  calibration_residual_single: [90, 105]
+  calibration_residual_double: [178, 135]
+
+# -----------------------------
+# 4. 字号层级
+# -----------------------------
+font_sizes_pt:
+  axis_label: 8.0
+  tick_label: 7.0
+  legend: 7.0
+  legend_title: 7.5
+  annotation: 7.0
+  panel_label: 9.0
+  inplot_metric_text: 7.2
+  radial_tick_label: 6.5
+  outer_ring_legend: 6.8
+  title_if_needed: 8.5
+
+font_weights:
+  axis_label: "normal"
+  tick_label: "normal"
+  legend: "normal"
+  panel_label: "bold"
+  inplot_metric_text: "normal"
+  radial_value_label: "bold"
+
+# -----------------------------
+# 5. 坐标轴、刻度、网格
+# -----------------------------
+axes:
+  spine_color: "#333333"
+  spine_linewidth: 0.75
+  top_right_spines: true
+  labelpad: 4.0
+  titlepad: 5.0
+
+ticks:
+  direction: "out"
+  major_size: 3.0
+  minor_size: 1.8
+  major_width: 0.65
+  minor_width: 0.45
+  color: "#333333"
+  pad: 2.5
+
+grid:
+  show: true
+  color: "#DDE3EA"
+  linewidth: 0.45
+  linestyle: "--"
+  alpha: 0.72
+  zorder: 0
+
+zero_lines:
+  color: "#333333"
+  linewidth: 0.8
+  linestyle: "-"
+
+reference_lines:
+  one_to_one:
+    color: "#222222"
+    linewidth: 0.9
+    linestyle: "--"
+    alpha: 0.9
+  residual_zero:
+    color: "#333333"
+    linewidth: 0.8
+    linestyle: "-"
+
+# -----------------------------
+# 6. 色彩系统
+# -----------------------------
+colors:
+  text: "#222222"
+  muted_text: "#555555"
+  axis: "#333333"
+  grid: "#DDE3EA"
+  background: "#FFFFFF"
+
+  # 色盲友好主色，适合模型/任务/分组对比
+  okabe_ito:
+    orange: "#E69F00"
+    sky_blue: "#56B4E9"
+    bluish_green: "#009E73"
+    yellow: "#F0E442"
+    blue: "#0072B2"
+    vermillion: "#D55E00"
+    reddish_purple: "#CC79A7"
+    black: "#000000"
+
+  # 推荐给你的 Train / Holdout / Test
+  data_split:
+    train: "#4C78A8"
+    validation: "#E69F00"
+    holdout: "#C44E52"
+    test: "#8172B2"
+
+  # 推荐给消融实验或多模型比较
+  model_lines:
+    main_model: "#0072B2"
+    ablation_1: "#D55E00"
+    ablation_2: "#009E73"
+    ablation_3: "#CC79A7"
+    baseline: "#555555"
+
+  # 雷达图外圈分类色块：低饱和、避免抢内圈线条
+  category_ring:
+    cat_1: "#A6CEE3"
+    cat_2: "#FB9A99"
+    cat_3: "#FEE08B"
+    cat_4: "#B2DF8A"
+    cat_5: "#CAB2D6"
+    cat_6: "#FDBF6F"
+    edge: "#FFFFFF"
+    border: "#999999"
+
+# -----------------------------
+# 7. 线条、点、误差带
+# -----------------------------
+lines:
+  main_linewidth: 1.25
+  secondary_linewidth: 1.05
+  thin_linewidth: 0.65
+  confidence_edge_linewidth: 0.0
+  marker_size: 3.0
+  marker_edge_width: 0.35
+  marker_edge_color: "#FFFFFF"
+  capsize: 2.0
+
+fills:
+  iqr_alpha: 0.14
+  confidence_alpha: 0.16
+  category_ring_alpha: 0.78
+  no_edge: true
+
+legend:
+  frameon: false
+  loc: "best"
+  handlelength: 1.45
+  handletextpad: 0.45
+  borderpad: 0.25
+  labelspacing: 0.30
+  columnspacing: 0.80
+  markerscale: 0.90
+
+# -----------------------------
+# 8. 你这类“预测-真实值分箱图”的专用配置
+# -----------------------------
+calibration_residual_plot:
+  layout:
+    nrows: 2
+    height_ratios: [2.2, 1.0]
+    hspace: 0.08
+    sharex: true
+
+  top_panel:
+    ylabel: "Binned predicted pTox"
+    show_one_to_one: true
+    show_iqr_band: true
+    metric_text_position_axes: [0.04, 0.94]
+    metric_text_line_spacing: 1.18
+
+  bottom_panel:
+    xlabel: "Observed pTox bin mean"
+    ylabel: "Residuals\n(Pred. − Obs.)"
+    show_residual_zero: true
+    residual_ylim_policy: "symmetric_or_quantile_padded"
+
+  train_style:
+    color: "#4C78A8"
+    marker: "o"
+    linewidth: 1.25
+    markersize: 3.0
+    fill_alpha: 0.11
+
+  holdout_style:
+    color: "#C44E52"
+    marker: "o"
+    linewidth: 1.25
+    markersize: 3.0
+    fill_alpha: 0.15
+
+  binning_note:
+    font_size: 6.5
+    color: "#666666"
+    position: "figure_bottom_left"
+
+# -----------------------------
+# 9. 你这类“圆形雷达图 + 外圈色块”的专用配置
+# -----------------------------
+radar_circular_plot:
+  projection: "polar"
+  start_angle_deg: 90
+  clockwise: true
+  radial_grid_linewidth: 0.38
+  angular_grid_linewidth: 0.32
+  grid_color: "#D4DAE2"
+  grid_linestyle: "--"
+  outer_spine_linewidth: 0.75
+  outer_spine_color: "#666666"
+
+  radial_tick:
+    font_size: 6.5
+    font_weight: "bold"
+    color: "#222222"
+    label_bbox:
+      facecolor: "#FFFFFF"
+      edgecolor: "none"
+      alpha: 0.80
+      pad: 0.8
+
+  series:
+    line_width: 1.10
+    marker_size: 2.3
+    marker_edge_width: 0.25
+    alpha: 0.95
+    zorder: 4
+
+  outer_category_ring:
+    enabled: true
+    ring_width_fraction: 0.055
+    gap_fraction: 0.002
+    edgecolor: "#FFFFFF"
+    edge_linewidth: 0.22
+    border_linewidth: 0.55
+    use_legend_instead_of_text_on_ring: true
+
+  annotation_collision_policy:
+    avoid_overlap: true
+    annotation_zorder: 8
+    bbox_behind_text: true
+
+# -----------------------------
+# 10. 导出
+# -----------------------------
+export:
+  preferred_vector: ["pdf", "svg"]
+  preferred_raster: ["png", "tiff"]
+  raster_dpi: 600
+  tiff_dpi: 600
+  transparent: false
+  close_after_save: true
+  check_file_size: true

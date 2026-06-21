@@ -9,6 +9,7 @@ class ToxicityValueResult:
     value: float | None
     source: str
     imputed: bool
+    value_quality: str
     excluded_reason: str | None = None
 
 
@@ -18,26 +19,48 @@ def choose_toxicity_value(
     max_value: float | None,
     dose_group_count: int | None,
     min_dose_groups_for_midpoint: int = 3,
+    mean_op: object = None,
+    min_op: object = None,
+    max_op: object = None,
 ) -> ToxicityValueResult:
-    if mean_value is not None:
-        return ToxicityValueResult(value=float(mean_value), source="mean", imputed=False)
+    del dose_group_count, min_dose_groups_for_midpoint
 
-    if (
-        min_value is not None
-        and max_value is not None
-        and dose_group_count is not None
-        and dose_group_count >= min_dose_groups_for_midpoint
-    ):
+    if mean_value is not None:
+        mean_operator = normalize_operator(mean_op)
+        if mean_operator in {"<", ">", "<=", ">="}:
+            return ToxicityValueResult(
+                value=float(mean_value),
+                source="mean_censored",
+                imputed=False,
+                value_quality="censored",
+                excluded_reason="censored_toxicity_value",
+            )
+        quality = "approx" if mean_operator == "~" else "exact"
+        return ToxicityValueResult(value=float(mean_value), source="mean", imputed=False, value_quality=quality)
+
+    if min_value is not None and max_value is not None:
+        min_operator = normalize_operator(min_op)
+        max_operator = normalize_operator(max_op)
+        if min_operator in {"<", ">", "<=", ">="} or max_operator in {"<", ">", "<=", ">="}:
+            return ToxicityValueResult(
+                value=(float(min_value) + float(max_value)) / 2.0,
+                source="min_max_midpoint_censored",
+                imputed=True,
+                value_quality="censored_midpoint",
+                excluded_reason="censored_min_or_max_toxicity_value",
+            )
         return ToxicityValueResult(
             value=(float(min_value) + float(max_value)) / 2.0,
             source="min_max_midpoint",
             imputed=True,
+            value_quality="midpoint",
         )
 
     return ToxicityValueResult(
         value=None,
         source="excluded",
         imputed=False,
+        value_quality="missing",
         excluded_reason="missing_mean_and_invalid_min_max_midpoint",
     )
 
@@ -54,10 +77,18 @@ def parse_float(value: object) -> float | None:
     text = str(value).strip()
     if not text or text.upper() in {"NR", "NC", "NA", "N/A", "NONE", "NULL"}:
         return None
+    while text.endswith(("*", "/")):
+        text = text[:-1].strip()
     try:
         return float(text)
     except ValueError:
         return None
+
+
+def normalize_operator(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def parse_int(value: object) -> int | None:
@@ -71,11 +102,13 @@ def parse_int(value: object) -> int | None:
 class TargetBuildResult:
     target_value: float | None
     target_name: str | None
+    target_family: str | None
     target_basis: str | None
     target_status: str
     tox_value: float | None
     tox_value_source: str
     tox_value_imputed: bool
+    value_quality: str
     excluded_reason: str | None
 
 
@@ -90,12 +123,15 @@ def build_target_from_standardized_value(
     molecular_weight_g_mol: object,
     medium: str | None,
     min_dose_groups_for_midpoint: int = 3,
+    mean_op: object = None,
+    min_op: object = None,
+    max_op: object = None,
 ) -> TargetBuildResult:
     """Build the first-version modeling target from standardized ECOTOX fields.
 
-    Rules are intentionally conservative:
+    Rules:
     - mean is preferred.
-    - if mean is missing, min/max midpoint is allowed only when dose groups >= 3.
+    - if mean is missing, min/max midpoint is allowed without a dose-group-count threshold.
     - water mg/L is converted to mol/L using molecular weight.
     - water mol/L is used directly.
     - soil/sediment mg/kg is modeled as -log10(mg/kg).
@@ -108,16 +144,34 @@ def build_target_from_standardized_value(
         max_value=parse_float(max_value),
         dose_group_count=parse_int(dose_group_count),
         min_dose_groups_for_midpoint=min_dose_groups_for_midpoint,
+        mean_op=mean_op,
+        min_op=min_op,
+        max_op=max_op,
     )
     if selected.value is None:
         return TargetBuildResult(
             target_value=None,
             target_name=None,
+            target_family=None,
             target_basis=None,
             target_status="excluded",
             tox_value=None,
             tox_value_source=selected.source,
             tox_value_imputed=selected.imputed,
+            value_quality=selected.value_quality,
+            excluded_reason=selected.excluded_reason,
+        )
+    if selected.excluded_reason is not None and selected.value_quality.startswith("censored"):
+        return TargetBuildResult(
+            target_value=None,
+            target_name=None,
+            target_family=None,
+            target_basis=None,
+            target_status="excluded",
+            tox_value=selected.value,
+            tox_value_source=selected.source,
+            tox_value_imputed=selected.imputed,
+            value_quality=selected.value_quality,
             excluded_reason=selected.excluded_reason,
         )
 
@@ -125,11 +179,13 @@ def build_target_from_standardized_value(
         return TargetBuildResult(
             target_value=None,
             target_name=None,
+            target_family=None,
             target_basis=None,
             target_status="excluded",
             tox_value=selected.value,
             tox_value_source=selected.source,
             tox_value_imputed=selected.imputed,
+            value_quality=selected.value_quality,
             excluded_reason="non_positive_toxicity_value",
         )
 
@@ -142,11 +198,13 @@ def build_target_from_standardized_value(
             return TargetBuildResult(
                 target_value=neg_log10(selected.value),
                 target_name="ptox_mol_l",
+                target_family="aquatic_pTox_mol_L",
                 target_basis="mol/L",
                 target_status="included",
                 tox_value=selected.value,
                 tox_value_source=selected.source,
                 tox_value_imputed=selected.imputed,
+                value_quality=selected.value_quality,
                 excluded_reason=None,
             )
 
@@ -156,22 +214,26 @@ def build_target_from_standardized_value(
                 return TargetBuildResult(
                     target_value=None,
                     target_name=None,
+                    target_family=None,
                     target_basis=None,
                     target_status="excluded",
                     tox_value=selected.value,
                     tox_value_source=selected.source,
                     tox_value_imputed=selected.imputed,
+                    value_quality=selected.value_quality,
                     excluded_reason="missing_or_invalid_molecular_weight_for_mg_l_to_mol_l",
                 )
             mol_l = selected.value / 1000.0 / mw
             return TargetBuildResult(
                 target_value=neg_log10(mol_l),
                 target_name="ptox_mol_l",
+                target_family="aquatic_pTox_mol_L",
                 target_basis="mol/L_from_mg/L",
                 target_status="included",
                 tox_value=selected.value,
                 tox_value_source=selected.source,
                 tox_value_imputed=selected.imputed,
+                value_quality=selected.value_quality,
                 excluded_reason=None,
             )
 
@@ -179,44 +241,152 @@ def build_target_from_standardized_value(
             return TargetBuildResult(
                 target_value=neg_log10(selected.value),
                 target_name="neg_log10_mg_kg",
+                target_family="solid_neglog_mg_kg",
                 target_basis=f"mg/kg:{medium_norm or 'unknown_medium'}",
                 target_status="included",
                 tox_value=selected.value,
                 tox_value_source=selected.source,
                 tox_value_imputed=selected.imputed,
+                value_quality=selected.value_quality,
                 excluded_reason=None,
             )
 
-        if family == "oral_mg_kg_d" or unit == "mg/kg/d":
+        if family in {"oral_mg_kg_d", "diet_mg_kg"} or unit in {"mg/kg/d", "mg/kg diet"}:
+            target_name = "neg_log10_mg_kg_diet" if family == "diet_mg_kg" or unit == "mg/kg diet" else "neg_log10_mg_kg_bw_day"
+            target_basis = "mg/kg diet" if target_name.endswith("_diet") else "mg/kg/day"
             return TargetBuildResult(
                 target_value=neg_log10(selected.value),
-                target_name="neg_log10_mg_kg_bw_day",
-                target_basis="mg/kg/day",
+                target_name=target_name,
+                target_family="diet_oral_neglog_mg_kg",
+                target_basis=target_basis,
                 target_status="included",
                 tox_value=selected.value,
                 tox_value_source=selected.source,
                 tox_value_imputed=selected.imputed,
+                value_quality=selected.value_quality,
+                excluded_reason=None,
+            )
+
+        if family == "soil_g_ha" or unit == "g/ha":
+            return TargetBuildResult(
+                target_value=neg_log10(selected.value),
+                target_name="neg_log10_g_ha",
+                target_family="application_neglog_g_ha",
+                target_basis="g/ha",
+                target_status="included",
+                tox_value=selected.value,
+                tox_value_source=selected.source,
+                tox_value_imputed=selected.imputed,
+                value_quality=selected.value_quality,
+                excluded_reason=None,
+            )
+
+        if family == "soil_l_ha" or unit == "L/ha":
+            return TargetBuildResult(
+                target_value=neg_log10(selected.value),
+                target_name="neg_log10_l_ha",
+                target_family="application_neglog_l_ha",
+                target_basis="L/ha",
+                target_status="included",
+                tox_value=selected.value,
+                tox_value_source=selected.source,
+                tox_value_imputed=selected.imputed,
+                value_quality=selected.value_quality,
+                excluded_reason=None,
+            )
+
+        if family == "seed_g_kg" or unit == "g/kg seed":
+            return TargetBuildResult(
+                target_value=neg_log10(selected.value),
+                target_name="neg_log10_g_kg_seed",
+                target_family="seed_treatment_neglog",
+                target_basis="g/kg seed",
+                target_status="included",
+                tox_value=selected.value,
+                tox_value_source=selected.source,
+                tox_value_imputed=selected.imputed,
+                value_quality=selected.value_quality,
+                excluded_reason=None,
+            )
+
+        if family == "seed_ml_kg" or unit == "mL/kg seed":
+            return TargetBuildResult(
+                target_value=neg_log10(selected.value),
+                target_name="neg_log10_ml_kg_seed",
+                target_family="seed_treatment_neglog",
+                target_basis="mL/kg seed",
+                target_status="included",
+                tox_value=selected.value,
+                tox_value_source=selected.source,
+                tox_value_imputed=selected.imputed,
+                value_quality=selected.value_quality,
+                excluded_reason=None,
+            )
+
+        if family == "percent" or unit == "%":
+            return TargetBuildResult(
+                target_value=neg_log10(selected.value),
+                target_name="neg_log10_percent",
+                target_family="percent_neglog",
+                target_basis="percent",
+                target_status="included",
+                tox_value=selected.value,
+                tox_value_source=selected.source,
+                tox_value_imputed=selected.imputed,
+                value_quality=selected.value_quality,
+                excluded_reason=None,
+            )
+
+        if family == "mass_per_organism_mg" or unit == "mg/organism":
+            return TargetBuildResult(
+                target_value=neg_log10(selected.value),
+                target_name="neg_log10_mg_per_organism",
+                target_family="organism_dose_neglog",
+                target_basis="mg/organism",
+                target_status="included",
+                tox_value=selected.value,
+                tox_value_source=selected.source,
+                tox_value_imputed=selected.imputed,
+                value_quality=selected.value_quality,
+                excluded_reason=None,
+            )
+
+        if family == "mass_per_experimental_unit_mg" or unit == "mg/experimental_unit":
+            return TargetBuildResult(
+                target_value=neg_log10(selected.value),
+                target_name="neg_log10_mg_per_experimental_unit",
+                target_family="organism_dose_neglog",
+                target_basis="mg/experimental_unit",
+                target_status="included",
+                tox_value=selected.value,
+                tox_value_source=selected.source,
+                tox_value_imputed=selected.imputed,
+                value_quality=selected.value_quality,
                 excluded_reason=None,
             )
     except ValueError as exc:
         return TargetBuildResult(
             target_value=None,
             target_name=None,
+            target_family=None,
             target_basis=None,
             target_status="excluded",
             tox_value=selected.value,
             tox_value_source=selected.source,
             tox_value_imputed=selected.imputed,
+            value_quality=selected.value_quality,
             excluded_reason=str(exc),
         )
 
     return TargetBuildResult(
         target_value=None,
         target_name=None,
+        target_family=None,
         target_basis=None,
         target_status="excluded",
         tox_value=selected.value,
         tox_value_source=selected.source,
         tox_value_imputed=selected.imputed,
+        value_quality=selected.value_quality,
         excluded_reason=f"unsupported_unit_family:{family or unit or 'missing'}",
     )

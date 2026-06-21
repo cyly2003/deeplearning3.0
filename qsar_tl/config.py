@@ -61,6 +61,7 @@ class ExecutionConfig:
     mode: str
     local_python: str | None = None
     remote_host: str | None = None
+    remote_port: int | None = None
     remote_user: str | None = None
     remote_project_dir: str | None = None
     remote_python: str | None = None
@@ -73,8 +74,17 @@ def parse_execution_config(config: dict[str, Any]) -> ExecutionConfig:
         mode=execution.get("mode", "local"),
         local_python=execution.get("local_python"),
         remote_host=remote.get("host"),
+        remote_port=_parse_optional_int(remote.get("port"), "execution.remote.port"),
         remote_user=remote.get("user"),
         remote_project_dir=remote.get("project_dir"),
         remote_python=remote.get("python"),
     )
 
+
+def _parse_optional_int(value: Any, field_name: str) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{field_name} must be an integer.") from exc

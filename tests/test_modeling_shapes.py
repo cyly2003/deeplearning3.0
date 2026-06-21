@@ -22,6 +22,8 @@ def _synthetic_samples() -> list[dict[str, object]]:
             "molecular_numeric": [0.1, 1.2, -0.3],
             "fingerprint": [1, 0, 1, 0],
             "categorical_ids": {"species_id": 1, "primary_medium_id": 1},
+            "adapter_id": 1,
+            "adapter_name": "aquatic|ptox_mol_l",
             "task_head": "ECx_Mortality",
             "target_value": 2.0,
         },
@@ -30,6 +32,8 @@ def _synthetic_samples() -> list[dict[str, object]]:
             "molecular_numeric": [0.2, 1.0, -0.1],
             "fingerprint": [0, 1, 1, 0],
             "categorical_ids": {"species_id": 2, "primary_medium_id": 1},
+            "adapter_id": 1,
+            "adapter_name": "aquatic|ptox_mol_l",
             "task_head": "NOEC_Growth",
             "target_value": 1.4,
         },
@@ -38,6 +42,8 @@ def _synthetic_samples() -> list[dict[str, object]]:
             "molecular_numeric": [0.4, 0.8, 0.2],
             "fingerprint": [1, 1, 0, 0],
             "categorical_ids": {"species_id": 1, "primary_medium_id": 2},
+            "adapter_id": 2,
+            "adapter_name": "soil|neg_log10_mg_kg",
             "task_head": "ECx_Mortality",
             "target_value": 2.3,
         },
@@ -46,6 +52,8 @@ def _synthetic_samples() -> list[dict[str, object]]:
             "molecular_numeric": [0.5, 0.6, 0.4],
             "fingerprint": [0, 0, 1, 1],
             "categorical_ids": {"species_id": 3, "primary_medium_id": 2},
+            "adapter_id": 2,
+            "adapter_name": "soil|neg_log10_mg_kg",
             "task_head": "NOEC_Growth",
             "target_value": 1.1,
         },
@@ -58,6 +66,7 @@ def _model(dataset: AggregatedTaskDataset) -> EcotoxMultiTaskNetwork:
             numeric_dim=dataset.numeric_dim(),
             fingerprint_dim=dataset.fingerprint_dim(),
             categorical_cardinalities={"primary_medium_id": 3, "species_id": 4},
+            adapter_count=3,
             task_heads=("ECx_Mortality", "NOEC_Growth"),
             hidden_dims=(16, 8),
             dropout=0.0,
@@ -73,6 +82,7 @@ def test_aggregated_task_dataset_normalizes_synthetic_rows() -> None:
     assert dataset.fingerprint_dim() == 4
     assert dataset.task_heads() == ("ECx_Mortality", "NOEC_Growth")
     assert dataset[0]["categorical_ids"] == {"species_id": 1, "primary_medium_id": 1}
+    assert dataset[0]["adapter_id"] == 1
 
 
 def test_multitask_network_forward_shapes() -> None:
@@ -84,6 +94,7 @@ def test_multitask_network_forward_shapes() -> None:
         molecular_numeric=batch["molecular_numeric"],
         fingerprint=batch["fingerprint"],
         categorical_ids=batch["categorical_ids"],
+        adapter_ids=batch["adapter_id"],
     )
 
     assert set(outputs) == {"ECx_Mortality", "NOEC_Growth"}

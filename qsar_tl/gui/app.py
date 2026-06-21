@@ -190,6 +190,7 @@ class MainWindow(QMainWindow):
                 job,
                 local_python=execution.local_python,
                 remote_host=execution.remote_host,
+                remote_port=execution.remote_port,
                 remote_user=execution.remote_user,
                 remote_project_dir=execution.remote_project_dir,
                 remote_python=execution.remote_python,

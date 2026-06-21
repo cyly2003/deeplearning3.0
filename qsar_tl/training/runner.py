@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -21,7 +22,7 @@ class LocalRunner:
         python = self.python_exe or "python"
         command = [python, "-m", "qsar_tl.training.train", "--config", str(config_path)]
         if dry_run:
-            print(" ".join(command))
+            print(format_command(command))
             return
         subprocess.run(command, check=True)
 
@@ -32,17 +33,26 @@ class RemoteRunner:
     user: str
     project_dir: str
     remote_python: str
+    port: int | None = None
 
     def run(self, config_path: Path, dry_run: bool = False) -> None:
         remote = f"{self.user}@{self.host}"
         remote_config = f"{self.project_dir}/configs/{config_path.name}"
+        remote_command = (
+            f"cd {shlex.quote(self.project_dir)} && "
+            f"{shlex.quote(self.remote_python)} -m qsar_tl.training.train "
+            f"--config {shlex.quote(remote_config)}"
+        )
+        ssh_command = ["ssh"]
+        if self.port is not None:
+            ssh_command.extend(["-p", str(self.port)])
         command = [
-            "ssh",
+            *ssh_command,
             remote,
-            f"cd {self.project_dir} && {self.remote_python} -m qsar_tl.training.train --config {remote_config}",
+            remote_command,
         ]
         if dry_run:
-            print(" ".join(command))
+            print(format_command(command))
             return
         subprocess.run(command, check=True)
 
@@ -67,6 +77,10 @@ def build_runner(config: dict[str, Any]) -> Runner:
             user=execution.remote_user or "",
             project_dir=execution.remote_project_dir or "",
             remote_python=execution.remote_python or "",
+            port=execution.remote_port,
         )
     return LocalRunner(python_exe=execution.local_python)
 
+
+def format_command(command: list[str]) -> str:
+    return " ".join(shlex.quote(part) for part in command)

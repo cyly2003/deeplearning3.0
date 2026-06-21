@@ -14,6 +14,7 @@ from qsar_tl.data.task_mapping import TaskMappingResult, map_task_head
 
 TASK_COLUMNS = [
     "task_head",
+    "task_group",
     "task_family",
     "effect_family",
     "effect_level_x",
@@ -33,11 +34,37 @@ AGGREGATED_TASK_COLUMNS = [
     "latin_name",
     "common_name",
     "task_head",
+    "task_group",
     "task_family",
     "effect_family",
     "effect_level_x",
     "target_name",
+    "target_family",
     "target_basis",
+    "value_quality",
+    "unit_family_v2",
+    "standard_unit_v2",
+    "standard_value_mg_l",
+    "standard_value_mol_l",
+    "standard_value_mg_kg",
+    "standard_value_g_ha",
+    "standard_value_mg_kg_diet",
+    "standard_value_mg_kg_bw_day",
+    "unit_conversion_source",
+    "unit_conversion_confidence",
+    "unit_conversion_note",
+    "conversion_path",
+    "active_ingredient_basis",
+    "acid_equivalent_basis",
+    "medium_domain",
+    "primary_medium_domain",
+    "medium_domains",
+    "medium_domain_detail",
+    "medium_domain_reason",
+    "medium_conflict_flag",
+    "primary_medium",
+    "habitat_labels",
+    "organism_habitat",
     "media_type",
     "organism_lifestage",
     "duration_bin_h",
@@ -52,6 +79,18 @@ AGGREGATED_TASK_COLUMNS = [
 ]
 
 AGGREGATION_KEY_COLUMNS = [
+    # Current aggregation behavior:
+    # Records are merged only when every key below is identical. This keeps
+    # EC10/EC20/EC50 separate because effect_level_x is part of the key, and
+    # keeps target scales separate because target_name/target_basis/unit fields
+    # are also part of the key.
+    #
+    # Scientific risk to audit before formal soil modeling:
+    # reference_number, test_id, and publication_year are not currently part of
+    # this key. Therefore, records from different papers or test batches can be
+    # merged when the chemical/species/endpoint/medium/duration descriptors
+    # match. The redesigned pipeline should add reference-aware QC, year-based
+    # weighting, and cross-reference conflict flags before aggregation.
     "cas_number",
     "dtxsid",
     "chemical_name",
@@ -60,11 +99,37 @@ AGGREGATION_KEY_COLUMNS = [
     "latin_name",
     "common_name",
     "task_head",
+    "task_group",
     "task_family",
     "effect_family",
     "effect_level_x",
     "target_name",
+    "target_family",
     "target_basis",
+    "value_quality",
+    "unit_family_v2",
+    "standard_unit_v2",
+    "standard_value_mg_l",
+    "standard_value_mol_l",
+    "standard_value_mg_kg",
+    "standard_value_g_ha",
+    "standard_value_mg_kg_diet",
+    "standard_value_mg_kg_bw_day",
+    "unit_conversion_source",
+    "unit_conversion_confidence",
+    "unit_conversion_note",
+    "conversion_path",
+    "active_ingredient_basis",
+    "acid_equivalent_basis",
+    "medium_domain",
+    "primary_medium_domain",
+    "medium_domains",
+    "medium_domain_detail",
+    "medium_domain_reason",
+    "medium_conflict_flag",
+    "primary_medium",
+    "habitat_labels",
+    "organism_habitat",
     "media_type",
     "organism_lifestage",
     "duration_bin_h",
@@ -148,6 +213,7 @@ def _mapping_to_row(
 ) -> dict[str, object]:
     return {
         "task_head": mapping.task_head,
+        "task_group": mapping.task_group,
         "task_family": mapping.task_family,
         "effect_family": mapping.effect_family,
         "effect_level_x": mapping.effect_level_x,
@@ -207,6 +273,11 @@ def build_task_records(
 
 
 def aggregate_task_records(conn: sqlite3.Connection) -> dict[str, int]:
+    # This is the first-pass strict-equality aggregation used by the current
+    # experiments. It intentionally does not perform outlier removal, reference
+    # weighting, or conflict resolution. The redesign plan replaces this with a
+    # QC-first aggregation step while keeping this function as a reproducible
+    # baseline for comparing old and new sample counts.
     create_table(conn, "aggregated_task_records", AGGREGATED_TASK_COLUMNS)
 
     buckets: dict[tuple[object, ...], AggregationBucket] = {}
@@ -220,7 +291,7 @@ def aggregate_task_records(conn: sqlite3.Connection) -> dict[str, int]:
         """
     )
     for row in cursor:
-        key = tuple(row[column] for column in AGGREGATION_KEY_COLUMNS)
+        key = tuple(row[column] if column in row.keys() else None for column in AGGREGATION_KEY_COLUMNS)
         bucket = buckets.get(key)
         if bucket is None:
             bucket = AggregationBucket(key=key)

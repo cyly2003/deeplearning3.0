@@ -47,6 +47,17 @@ def test_build_training_command_supports_local_and_remote() -> None:
     assert "qsar_tl.training.train" in command[2]
     assert "/srv/ecotox/configs/experiment.example.yaml" in command[2]
 
+    command_with_port = build_training_command(
+        remote_job,
+        remote_host="gpu.example.org",
+        remote_port=32136,
+        remote_user="researcher",
+        remote_project_dir="/srv/ecotox",
+        remote_python="/opt/conda/envs/qsar/bin/python",
+    )
+    assert command_with_port[:3] == ["ssh", "-p", "32136"]
+    assert command_with_port[3] == "researcher@gpu.example.org"
+
     explicit_remote_config = TrainingJob(
         config_path=config_path,
         execution_mode="remote",

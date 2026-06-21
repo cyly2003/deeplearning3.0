@@ -26,6 +26,7 @@ class TaskMappingTests(unittest.TestCase):
         result = map_task_head(endpoint="NOEC", effect="GRO", measurement="LGTH")
 
         self.assertEqual(result.task_status, "included")
+        self.assertEqual(result.task_group, "main_toxicity")
         self.assertEqual(result.task_head, "NOEC_Growth")
         self.assertIsNone(result.effect_level_x)
 
@@ -33,14 +34,39 @@ class TaskMappingTests(unittest.TestCase):
         result = map_task_head(endpoint="LOEC", effect="REP", measurement="PROG/")
 
         self.assertEqual(result.task_status, "included")
+        self.assertEqual(result.task_group, "main_toxicity")
         self.assertEqual(result.task_head, "LOEC_Reproduction")
         self.assertIsNone(result.effect_level_x)
 
-    def test_excluded_endpoint_is_reported(self) -> None:
+    def test_noel_and_loel_alias_to_noec_and_loec(self) -> None:
+        noel = map_task_head(endpoint="NOEL", effect="MOR", measurement="MORT")
+        loel = map_task_head(endpoint="LOEL", effect="POP", measurement="ABND")
+
+        self.assertEqual(noel.task_status, "included")
+        self.assertEqual(noel.task_head, "NOEC_Mortality")
+        self.assertEqual(loel.task_status, "included")
+        self.assertEqual(loel.task_head, "LOEC_Population")
+
+    def test_auxiliary_endpoint_is_downstream_knowledge_task(self) -> None:
+        result = map_task_head(endpoint="IC25", effect="POP", measurement="PGRT")
+
+        self.assertEqual(result.task_status, "included")
+        self.assertEqual(result.task_group, "toxicity_aux")
+        self.assertEqual(result.task_head, "ICx_Population")
+        self.assertEqual(result.effect_level_x, 25.0)
+
+    def test_sublethal_effect_family_maps_to_auxiliary_knowledge(self) -> None:
+        result = map_task_head(endpoint="NOEC", effect="BEH", measurement="SWIM/")
+
+        self.assertEqual(result.task_status, "included")
+        self.assertEqual(result.task_group, "main_toxicity")
+        self.assertEqual(result.task_head, "NOEC_Behavior")
+
+    def test_bioaccumulation_endpoint_is_not_toxicity_concentration_target(self) -> None:
         result = map_task_head(endpoint="BCFD", effect="ACC", measurement="RSDE")
 
         self.assertEqual(result.task_status, "excluded")
-        self.assertEqual(result.task_excluded_reason, "excluded_endpoint:BCFD")
+        self.assertEqual(result.task_excluded_reason, "bioaccumulation_endpoint_requires_factor_target")
 
     def test_oral_target_is_excluded_before_endpoint_mapping(self) -> None:
         result = map_task_head(

@@ -41,6 +41,8 @@ class DatasetFieldConfig:
     )
     categorical_id_field: str = "categorical_ids"
     categorical_fields: tuple[str, ...] = DEFAULT_CATEGORICAL_FIELDS
+    adapter_id_field: str = "adapter_id"
+    adapter_name_field: str = "adapter_name"
     task_head_field: str = "task_head"
     target_field: str = "target_value"
     sample_id_fields: tuple[str, ...] = ("sample_id", "record_id", "aggregate_id", "id")
@@ -53,18 +55,26 @@ class AggregatedTaskSample:
     categorical_ids: dict[str, int]
     task_head: str
     target_value: float
+    adapter_id: int = 0
+    adapter_name: str | None = None
     sample_id: str | int | None = None
     raw: Mapping[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "molecular_numeric": self.molecular_numeric,
             "fingerprint": self.fingerprint,
             "categorical_ids": self.categorical_ids,
             "task_head": self.task_head,
             "target_value": self.target_value,
+            "adapter_id": self.adapter_id,
+            "adapter_name": self.adapter_name,
             "sample_id": self.sample_id,
         }
+        for key, value in self.raw.items():
+            if key not in payload:
+                payload[str(key)] = value
+        return payload
 
 
 class AggregatedTaskDataset:
@@ -160,6 +170,8 @@ class AggregatedTaskDataset:
             categorical_ids=categorical_ids,
             task_head=str(task_head),
             target_value=float(target_value),
+            adapter_id=self._coerce_adapter_id(row),
+            adapter_name=self._coerce_adapter_name(row),
             sample_id=self._first_present(row, self.field_config.sample_id_fields),
             raw=row,
         )
@@ -188,6 +200,19 @@ class AggregatedTaskDataset:
             if field_name in row and row[field_name] is not None:
                 result[field_name] = int(row[field_name])
         return result
+
+    def _coerce_adapter_id(self, row: Mapping[str, Any]) -> int:
+        raw = row.get(self.field_config.adapter_id_field, 0)
+        if raw is None or str(raw).strip() == "":
+            return 0
+        return int(raw)
+
+    def _coerce_adapter_name(self, row: Mapping[str, Any]) -> str | None:
+        raw = row.get(self.field_config.adapter_name_field)
+        if raw is None:
+            return None
+        text = str(raw).strip()
+        return text or None
 
     @staticmethod
     def _first_present(row: Mapping[str, Any], names: Sequence[str]) -> Any:

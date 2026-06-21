@@ -14,8 +14,8 @@ dependencies = [
 [project.optional-dependencies]
 chem = ["rdkit>=2023.9"]
 ml = ["torch>=2.2", "shap>=0.45"]
+baseline = ["xgboost>=2.0", "lightgbm>=4.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["qsar_tl*"]
-

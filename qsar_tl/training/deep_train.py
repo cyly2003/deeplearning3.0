@@ -22,6 +22,10 @@ class DeepTrainingConfig:
     learning_rate: float = 1e-3
     huber_delta: float = 1.0
     task_weights: Mapping[str, float] = field(default_factory=dict)
+    optimizer: str = "adamw"
+    weight_decay: float = 1e-4
+    gradient_clip_norm: float | None = None
+    scheduler: str = "none"
     device: str = "cpu"
     seed: int = 42
     num_workers: int = 0
@@ -57,6 +61,14 @@ def collate_aggregated_task_batch(batch: Sequence[Mapping[str, Any]]) -> dict[st
         [float(sample["target_value"]) for sample in batch],
         dtype=torch.float32,
     )
+    sample_weight = torch.tensor(
+        [float(sample.get("sample_weight", 1.0) or 1.0) for sample in batch],
+        dtype=torch.float32,
+    )
+    adapter_id = torch.tensor(
+        [int(sample.get("adapter_id", 0) or 0) for sample in batch],
+        dtype=torch.long,
+    )
     task_head = [str(sample["task_head"]) for sample in batch]
 
     categorical_fields = sorted(
@@ -81,8 +93,12 @@ def collate_aggregated_task_batch(batch: Sequence[Mapping[str, Any]]) -> dict[st
         "molecular_numeric": molecular_numeric,
         "fingerprint": fingerprint,
         "categorical_ids": categorical_ids,
+        "adapter_id": adapter_id,
         "task_head": task_head,
         "target_value": target_value,
+        "sample_weight": sample_weight,
+        "split_part": [str(sample.get("split_part", "")) for sample in batch],
+        "medium_domain": [str(sample.get("medium_domain", "")) for sample in batch],
     }
 
 
@@ -100,7 +116,7 @@ def train_model(
     set_torch_seed(train_config.seed)
     device = torch.device(train_config.device)
     model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=train_config.learning_rate)
+    optimizer = build_optimizer(model.parameters(), train_config)
     dataloader = DataLoader(
         dataset,
         batch_size=train_config.batch_size,
@@ -150,6 +166,8 @@ def train_one_epoch(
             for field_name, ids in batch["categorical_ids"].items()
         }
         targets = batch["target_value"].to(target_device)
+        adapter_ids = batch.get("adapter_id")
+        adapter_ids = adapter_ids.to(target_device) if adapter_ids is not None else None
         task_heads = list(batch["task_head"])
 
         optimizer.zero_grad()
@@ -157,6 +175,7 @@ def train_one_epoch(
             molecular_numeric=molecular_numeric,
             fingerprint=fingerprint,
             categorical_ids=categorical_ids,
+            adapter_ids=adapter_ids,
         )
         loss = masked_multitask_huber_loss(
             outputs=outputs,
@@ -166,6 +185,8 @@ def train_one_epoch(
             loss_fn=loss_fn,
         )
         loss.backward()
+        if config.gradient_clip_norm is not None and config.gradient_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.gradient_clip_norm))
         optimizer.step()
 
         batch_size = len(task_heads)
@@ -217,7 +238,25 @@ def masked_multitask_huber_loss(
         losses.append(weight * loss_fn(outputs[task_head][mask], targets[mask]))
     if not losses:
         raise ValueError("No task losses were computed for this batch.")
-    return torch.stack(losses).sum()
+    weight_sum = sum(float(task_weights.get(task_head, 1.0)) for task_head in sorted(set(task_heads)))
+    return torch.stack(losses).sum() / max(weight_sum, 1e-12)
+
+
+def build_optimizer(
+    parameters: Iterable[torch.nn.Parameter],
+    config: DeepTrainingConfig,
+) -> torch.optim.Optimizer:
+    optimizer_name = (config.optimizer or "adamw").strip().lower()
+    params = list(parameters)
+    if optimizer_name == "adamw":
+        return torch.optim.AdamW(
+            params,
+            lr=float(config.learning_rate),
+            weight_decay=float(config.weight_decay),
+        )
+    if optimizer_name == "adam":
+        return torch.optim.Adam(params, lr=float(config.learning_rate))
+    raise ValueError(f"Unsupported optimizer '{config.optimizer}'. Use 'adamw' or 'adam'.")
 
 
 def _accumulate_task_losses(

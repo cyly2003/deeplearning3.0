@@ -12,7 +12,11 @@ from qsar_tl.evaluation.metrics import regression_metrics
 PredictionRow = dict[str, Any]
 
 
-def regression_report_rows(predictions: Iterable[PredictionRow]) -> list[dict[str, Any]]:
+def regression_report_rows(
+    predictions: Iterable[PredictionRow],
+    *,
+    huber_delta: float = 1.0,
+) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str, str], dict[str, list[float]]] = defaultdict(
         lambda: {"y_true": [], "y_pred": []}
     )
@@ -30,7 +34,7 @@ def regression_report_rows(predictions: Iterable[PredictionRow]) -> list[dict[st
 
     rows: list[dict[str, Any]] = []
     for (split_name, split_part, task_head), values in sorted(grouped.items()):
-        metrics = regression_metrics(values["y_true"], values["y_pred"])
+        metrics = regression_metrics(values["y_true"], values["y_pred"], huber_delta=huber_delta)
         rows.append(
             {
                 "split_name": split_name,
