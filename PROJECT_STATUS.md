@@ -781,3 +781,27 @@ python -m qsar_tl.cli run-baseline --config configs\experiment.example.yaml --db
   - 对照：`soil-only C reference` 平均 R2 为 -0.1120，平均 Huber loss 为 0.8623；`zero-shot C` 平均 R2 为 -3.0625，平均 Huber loss 为 2.1831。
   - 结论：原 `1e-4/10` 微调学习率和步数均偏保守；`3e-4/20` 更适合作为当前二阶段迁移主配置。冻结到 `heads_embeddings` 明显欠拟合，不建议作为主策略。
   - 风险提示：本轮诊断使用同一土壤 holdout 比较超参数，正式结论应再配独立验证划分或嵌套验证，避免测试集调参偏乐观。
+
+## 2026-06-22 工作区与远端保守整理
+
+- 整理原则：本次只做保守归档，不直接删除实验结果或派生数据库；归档目录可回溯。
+- GitHub 备份：
+  - 分支：`codex/workspace-cleanup-20260622`
+  - 整理前源码/文档安全提交：`bc3040c Record QSAR cleanup baseline and project updates`
+  - 已新增 `.gitattributes`，固定文本换行策略，减少 Windows LF/CRLF 噪声。
+- 本地整理：
+  - 清单文档：`docs/cleanup_inventory_20260622.md`
+  - 本地归档目录：`outputs/_archive/cleanup_20260622/`
+  - 已移动 17 项旧中间文件/目录，包括旧派生库、smoke/debug 目录、legacy v1.0/v1.1/v1.2.0 原始实验目录。
+  - 当前主派生库仍保留在 `outputs/derived/modeling_dataset_v2_0_0_rebuild.sqlite`。
+  - 整理后 `outputs/derived` 约 6.210 GB，`outputs/experiments` 约 0.319 GB，`outputs/_archive/cleanup_20260622` 约 5.954 GB。
+- 远端整理：
+  - 远端项目目录：`/home/easyai/DL1/ecotox_qsar_transfer`
+  - 整理前确认远端不是 Git 工作树，代码已通过 `scripts/sync_to_server.ps1` 从本地同步，不重传大 SQLite。
+  - 远端归档目录：`/home/easyai/DL1/ecotox_qsar_transfer/outputs/_archive/cleanup_20260622/`
+  - 已移动 19 项旧中间文件/目录；保留当前 v2 主结果、v1.2.2-v1.2.4 当前结果、features、logs、audits 和应用域结果。
+  - 远端 `outputs/derived` 仅保留 `modeling_dataset_v2_0_0_rebuild.sqlite`，约 7.7 GB；`outputs/experiments` 约 3.4 GB；远端归档约 13 GB。
+- 核验结果：
+  - 本地测试：`E:\TOOLS\anaconda\python.exe -m pytest` 通过，95 passed、1 skipped、1 warning。
+  - 配置核验：`E:\TOOLS\anaconda\python.exe -m qsar_tl.cli validate-config --config configs/experiment.remote.easyai.yaml` 通过。
+  - 远端训练进程检查未发现实际训练进程。

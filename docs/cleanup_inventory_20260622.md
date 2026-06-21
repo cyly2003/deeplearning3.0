@@ -56,3 +56,41 @@
 - 本地测试：`E:\TOOLS\anaconda\python.exe -m pytest`。
 - 配置核验：`E:\TOOLS\anaconda\python.exe -m qsar_tl.cli validate-config configs/experiment.remote.easyai.yaml`。
 - 远端核验：`pgrep` 不显示实际训练进程，`du -sh outputs/*` 和实验目录列表显示归档生效。
+
+## 执行结果
+
+- GitHub 安全备份分支：`codex/workspace-cleanup-20260622`。
+- 整理前源码/文档备份提交：`bc3040c Record QSAR cleanup baseline and project updates`。
+- 远端代码同步：已通过 `scripts/sync_to_server.ps1 -Config configs/experiment.remote.easyai.yaml -LocalPython E:\TOOLS\anaconda\python.exe` 同步，不包含大 SQLite 重传。
+- 本地归档：移动 17 项，跳过 0 项；归档目录为 `outputs/_archive/cleanup_20260622/`。
+- 远端归档：移动 19 项，跳过 0 项；归档目录为 `/home/easyai/DL1/ecotox_qsar_transfer/outputs/_archive/cleanup_20260622/`。
+
+## 整理后本地概况
+
+| 路径 | 文件数 | 体积 | 说明 |
+| --- | ---: | ---: | --- |
+| `outputs/derived` | 3 | 6.210 GB | 仅保留 v2 主派生库及 WAL/SHM |
+| `outputs/_archive/cleanup_20260622` | 293 | 5.954 GB | 本次保守归档内容 |
+| `outputs/experiments` | 1619 | 0.319 GB | 保留的近期和正式实验结果 |
+| `outputs/audits` | 1149 | 0.421 GB | 审计输出保留 |
+| `outputs/features` | 3 | 0.017 GB | 特征缓存保留 |
+| `outputs/logs` | 192 | 0.001 GB | 日志保留 |
+
+## 整理后远端概况
+
+| 路径 | 体积 | 说明 |
+| --- | ---: | --- |
+| `outputs/_archive/cleanup_20260622` | 13 GB | 本次远端保守归档内容 |
+| `outputs/derived` | 7.7 GB | 仅保留 `modeling_dataset_v2_0_0_rebuild.sqlite` |
+| `outputs/experiments` | 3.4 GB | 保留当前 v2、v1.2.2-v1.2.4 和正式对照结果 |
+| `outputs/features` | 18 MB | 特征缓存保留 |
+| `outputs/ad` | 12 MB | 应用域结果保留 |
+| `outputs/logs` | 1.7 MB | 日志保留 |
+| `outputs/audits` | 20 KB | 审计输出保留 |
+
+## 最终核验结果
+
+- `E:\TOOLS\anaconda\python.exe -m pytest`：95 passed, 1 skipped, 1 warning。
+- `E:\TOOLS\anaconda\python.exe -m qsar_tl.cli validate-config --config configs/experiment.remote.easyai.yaml`：Config OK。
+- 远端训练进程检查：未发现实际训练进程。
+- 远端保留数据库：`outputs/derived/modeling_dataset_v2_0_0_rebuild.sqlite`。
