@@ -146,6 +146,15 @@ training:
       - LDx
     min_weight: 0.5
     max_weight: 3.0
+  toxicity_binning:
+    enabled: false
+    scheme: authority_v1
+    mode: aux_classification
+    loss_weight: 0.05
+    boundary_policy: hard
+    boundary_tolerance: 0.05
+    threshold_multiplier: 1.0
+    require_active_bin_for_regression: false
   task_weighting: balanced
   main_task_weight: 1.0
   toxicity_aux_task_weight: 0.35

@@ -4,6 +4,8 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
+from qsar_tl.modeling.network import TOXICITY_BIN_LOGITS_KEY
+
 try:
     import torch
     from torch import nn
@@ -29,6 +31,7 @@ class DeepTrainingConfig:
     device: str = "cpu"
     seed: int = 42
     num_workers: int = 0
+    toxicity_bin_loss_weight: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,10 @@ def collate_aggregated_task_batch(batch: Sequence[Mapping[str, Any]]) -> dict[st
         [float(sample.get("sample_weight", 1.0) or 1.0) for sample in batch],
         dtype=torch.float32,
     )
+    toxicity_bin_index = torch.tensor(
+        [int(sample.get("toxicity_bin_index", -1) if sample.get("toxicity_bin_index", -1) is not None else -1) for sample in batch],
+        dtype=torch.long,
+    )
     adapter_id = torch.tensor(
         [int(sample.get("adapter_id", 0) or 0) for sample in batch],
         dtype=torch.long,
@@ -97,6 +104,7 @@ def collate_aggregated_task_batch(batch: Sequence[Mapping[str, Any]]) -> dict[st
         "task_head": task_head,
         "target_value": target_value,
         "sample_weight": sample_weight,
+        "toxicity_bin_index": toxicity_bin_index,
         "split_part": [str(sample.get("split_part", "")) for sample in batch],
         "medium_domain": [str(sample.get("medium_domain", "")) for sample in batch],
     }
@@ -169,6 +177,8 @@ def train_one_epoch(
         adapter_ids = batch.get("adapter_id")
         adapter_ids = adapter_ids.to(target_device) if adapter_ids is not None else None
         task_heads = list(batch["task_head"])
+        toxicity_bin_index = batch.get("toxicity_bin_index")
+        toxicity_bin_index = toxicity_bin_index.to(target_device) if toxicity_bin_index is not None else None
 
         optimizer.zero_grad()
         outputs = model(
@@ -183,6 +193,8 @@ def train_one_epoch(
             task_heads=task_heads,
             task_weights=config.task_weights,
             loss_fn=loss_fn,
+            toxicity_bin_index=toxicity_bin_index,
+            toxicity_bin_loss_weight=config.toxicity_bin_loss_weight,
         )
         loss.backward()
         if config.gradient_clip_norm is not None and config.gradient_clip_norm > 0:
@@ -221,6 +233,8 @@ def masked_multitask_huber_loss(
     task_heads: Sequence[str],
     task_weights: Mapping[str, float],
     loss_fn: nn.Module,
+    toxicity_bin_index: torch.Tensor | None = None,
+    toxicity_bin_loss_weight: float = 0.0,
 ) -> torch.Tensor:
     device = targets.device
     losses: list[torch.Tensor] = []
@@ -239,7 +253,29 @@ def masked_multitask_huber_loss(
     if not losses:
         raise ValueError("No task losses were computed for this batch.")
     weight_sum = sum(float(task_weights.get(task_head, 1.0)) for task_head in sorted(set(task_heads)))
-    return torch.stack(losses).sum() / max(weight_sum, 1e-12)
+    regression_loss = torch.stack(losses).sum() / max(weight_sum, 1e-12)
+    aux_loss = toxicity_bin_classification_loss(
+        outputs,
+        toxicity_bin_index=toxicity_bin_index,
+    )
+    if aux_loss is None or float(toxicity_bin_loss_weight) <= 0:
+        return regression_loss
+    return regression_loss + float(toxicity_bin_loss_weight) * aux_loss
+
+
+def toxicity_bin_classification_loss(
+    outputs: Mapping[str, torch.Tensor],
+    *,
+    toxicity_bin_index: torch.Tensor | None,
+) -> torch.Tensor | None:
+    logits = outputs.get(TOXICITY_BIN_LOGITS_KEY)
+    if logits is None or toxicity_bin_index is None:
+        return None
+    targets = toxicity_bin_index.to(device=logits.device, dtype=torch.long)
+    mask = targets >= 0
+    if not bool(mask.any()):
+        return torch.zeros((), dtype=logits.dtype, device=logits.device)
+    return torch.nn.functional.cross_entropy(logits[mask], targets[mask])
 
 
 def build_optimizer(

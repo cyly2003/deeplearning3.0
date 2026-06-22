@@ -21,6 +21,10 @@ param(
     [double]$FinetuneLearningRate = 0,
     [int]$FinetuneBatchSize = 0,
     [string]$FinetuneFreeze = "",
+    [switch]$ToxicityBinning,
+    [string]$ToxicityBinningMode = "",
+    [double]$ToxicityBinningLossWeight = -1,
+    [string]$ToxicityBinningScheme = "",
     [switch]$ContinueOnError,
     [switch]$DryRun
 )
@@ -63,6 +67,10 @@ foreach ($splitName in $splitNames) {
         if ($FinetuneLearningRate -gt 0) { $trainScriptParams.FinetuneLearningRate = $FinetuneLearningRate }
         if ($FinetuneBatchSize -gt 0) { $trainScriptParams.FinetuneBatchSize = $FinetuneBatchSize }
         if ($FinetuneFreeze) { $trainScriptParams.FinetuneFreeze = $FinetuneFreeze }
+        if ($ToxicityBinning) { $trainScriptParams.ToxicityBinning = $true }
+        if ($ToxicityBinningMode) { $trainScriptParams.ToxicityBinningMode = $ToxicityBinningMode }
+        if ($ToxicityBinningLossWeight -ge 0) { $trainScriptParams.ToxicityBinningLossWeight = $ToxicityBinningLossWeight }
+        if ($ToxicityBinningScheme) { $trainScriptParams.ToxicityBinningScheme = $ToxicityBinningScheme }
         if ($DryRun) { $trainScriptParams.DryRun = $true }
 
         try {

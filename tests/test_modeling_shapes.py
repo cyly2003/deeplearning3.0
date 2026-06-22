@@ -7,7 +7,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from qsar_tl.modeling.dataset import AggregatedTaskDataset
-from qsar_tl.modeling.network import DeepModelConfig, EcotoxMultiTaskNetwork
+from qsar_tl.modeling.network import DeepModelConfig, EcotoxMultiTaskNetwork, TOXICITY_BIN_LOGITS_KEY
 from qsar_tl.training.deep_train import (
     DeepTrainingConfig,
     collate_aggregated_task_batch,
@@ -100,6 +100,34 @@ def test_multitask_network_forward_shapes() -> None:
     assert set(outputs) == {"ECx_Mortality", "NOEC_Growth"}
     assert outputs["ECx_Mortality"].shape == torch.Size([3])
     assert outputs["NOEC_Growth"].shape == torch.Size([3])
+
+
+def test_multitask_network_toxicity_bin_auxiliary_logits_shape() -> None:
+    dataset = AggregatedTaskDataset(_synthetic_samples())
+    batch = collate_aggregated_task_batch([dataset[index] for index in range(3)])
+    model = EcotoxMultiTaskNetwork(
+        DeepModelConfig(
+            numeric_dim=dataset.numeric_dim(),
+            fingerprint_dim=dataset.fingerprint_dim(),
+            categorical_cardinalities={"primary_medium_id": 3, "species_id": 4},
+            adapter_count=3,
+            task_heads=("ECx_Mortality", "NOEC_Growth"),
+            hidden_dims=(16, 8),
+            dropout=0.0,
+            toxicity_bin_count=5,
+            toxicity_binning_mode="aux_classification",
+        )
+    )
+
+    outputs = model(
+        molecular_numeric=batch["molecular_numeric"],
+        fingerprint=batch["fingerprint"],
+        categorical_ids=batch["categorical_ids"],
+        adapter_ids=batch["adapter_id"],
+    )
+
+    assert outputs[TOXICITY_BIN_LOGITS_KEY].shape == torch.Size([3, 5])
+    assert outputs["ECx_Mortality"].shape == torch.Size([3])
 
 
 def test_deep_train_cpu_smoke() -> None:

@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--effect-level-weighting", dest="effect_level_weighting_enabled", action="store_true", default=None)
     parser.add_argument("--no-effect-level-weighting", dest="effect_level_weighting_enabled", action="store_false")
     parser.add_argument("--effect-level-weighting-beta", type=float, default=None)
+    parser.add_argument("--toxicity-binning", dest="toxicity_binning_enabled", action="store_true", default=None)
+    parser.add_argument("--no-toxicity-binning", dest="toxicity_binning_enabled", action="store_false")
+    parser.add_argument("--toxicity-binning-mode", default=None, choices=["aux_classification", "soft_expert"])
+    parser.add_argument("--toxicity-binning-loss-weight", type=float, default=None)
+    parser.add_argument("--toxicity-binning-scheme", default=None)
     parser.add_argument("--domain-alignment-method", default=None, choices=["none", "coral"])
     parser.add_argument("--domain-alignment-weight", type=float, default=None)
     parser.add_argument("--swa", dest="swa_enabled", action="store_true", default=None)
@@ -139,6 +144,10 @@ def main() -> None:
         source_weighting_alpha=args.source_weighting_alpha,
         effect_level_weighting_enabled=args.effect_level_weighting_enabled,
         effect_level_weighting_beta=args.effect_level_weighting_beta,
+        toxicity_binning_enabled=args.toxicity_binning_enabled,
+        toxicity_binning_mode=args.toxicity_binning_mode,
+        toxicity_binning_loss_weight=args.toxicity_binning_loss_weight,
+        toxicity_binning_scheme=args.toxicity_binning_scheme,
         domain_alignment_method=args.domain_alignment_method,
         domain_alignment_weight=args.domain_alignment_weight,
         swa_enabled=args.swa_enabled,

@@ -45,6 +45,11 @@ param(
     [switch]$EffectLevelWeighting,
     [switch]$NoEffectLevelWeighting,
     [double]$EffectLevelWeightingBeta = -1,
+    [switch]$ToxicityBinning,
+    [switch]$NoToxicityBinning,
+    [string]$ToxicityBinningMode = "",
+    [double]$ToxicityBinningLossWeight = -1,
+    [string]$ToxicityBinningScheme = "",
     [string]$DomainAlignmentMethod = "",
     [double]$DomainAlignmentWeight = -1,
     [switch]$Swa,
@@ -119,6 +124,11 @@ if ($SourceWeightingAlpha -ge 0) { $trainArgs += " --source-weighting-alpha $Sou
 if ($EffectLevelWeighting) { $trainArgs += " --effect-level-weighting" }
 if ($NoEffectLevelWeighting) { $trainArgs += " --no-effect-level-weighting" }
 if ($EffectLevelWeightingBeta -ge 0) { $trainArgs += " --effect-level-weighting-beta $EffectLevelWeightingBeta" }
+if ($ToxicityBinning) { $trainArgs += " --toxicity-binning" }
+if ($NoToxicityBinning) { $trainArgs += " --no-toxicity-binning" }
+if ($ToxicityBinningMode) { $trainArgs += " --toxicity-binning-mode $(Quote-RemoteArg -Value $ToxicityBinningMode)" }
+if ($ToxicityBinningLossWeight -ge 0) { $trainArgs += " --toxicity-binning-loss-weight $ToxicityBinningLossWeight" }
+if ($ToxicityBinningScheme) { $trainArgs += " --toxicity-binning-scheme $(Quote-RemoteArg -Value $ToxicityBinningScheme)" }
 if ($DomainAlignmentMethod) { $trainArgs += " --domain-alignment-method $(Quote-RemoteArg -Value $DomainAlignmentMethod)" }
 if ($DomainAlignmentWeight -ge 0) { $trainArgs += " --domain-alignment-weight $DomainAlignmentWeight" }
 if ($Swa) { $trainArgs += " --swa" }

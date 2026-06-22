@@ -14,6 +14,9 @@ except ImportError as exc:  # pragma: no cover - exercised only without torch
     ) from exc
 
 
+TOXICITY_BIN_LOGITS_KEY = "__toxicity_bin_logits__"
+
+
 @dataclass(frozen=True)
 class DeepModelConfig:
     numeric_dim: int
@@ -27,6 +30,8 @@ class DeepModelConfig:
     dropout: float = 0.1
     use_molecular_residual: bool = True
     use_adapters: bool = True
+    toxicity_bin_count: int = 0
+    toxicity_binning_mode: str = "none"
 
 
 class EcotoxMultiTaskNetwork(nn.Module):
@@ -102,6 +107,13 @@ class EcotoxMultiTaskNetwork(nn.Module):
         self.heads = nn.ModuleDict(
             {task_head: nn.Linear(head_input_dim, 1) for task_head in config.task_heads}
         )
+        toxicity_bin_count = max(0, int(config.toxicity_bin_count))
+        toxicity_mode = str(config.toxicity_binning_mode or "none").strip().lower()
+        self.toxicity_bin_classifier = (
+            nn.Linear(head_input_dim, toxicity_bin_count)
+            if toxicity_bin_count > 0 and toxicity_mode in {"aux_classification", "soft_expert"}
+            else None
+        )
 
     def forward(
         self,
@@ -116,7 +128,10 @@ class EcotoxMultiTaskNetwork(nn.Module):
             categorical_ids=categorical_ids,
             adapter_ids=adapter_ids,
         )
-        return {task_head: head(shared).squeeze(-1) for task_head, head in self.heads.items()}
+        outputs = {task_head: head(shared).squeeze(-1) for task_head, head in self.heads.items()}
+        if self.toxicity_bin_classifier is not None:
+            outputs[TOXICITY_BIN_LOGITS_KEY] = self.toxicity_bin_classifier(shared)
+        return outputs
 
     def encode_shared(
         self,

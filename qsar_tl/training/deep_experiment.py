@@ -15,7 +15,7 @@ import numpy as np
 
 from qsar_tl.evaluation.metrics import regression_metrics
 from qsar_tl.modeling.dataset import AggregatedTaskDataset
-from qsar_tl.modeling.network import DeepModelConfig, EcotoxMultiTaskNetwork
+from qsar_tl.modeling.network import DeepModelConfig, EcotoxMultiTaskNetwork, TOXICITY_BIN_LOGITS_KEY
 from qsar_tl.training.baseline import (
     EVAL_SPLIT_PARTS,
     add_duration_nonlinear_features,
@@ -27,6 +27,13 @@ from qsar_tl.training.deep_train import (
     build_optimizer,
     collate_aggregated_task_batch,
     set_torch_seed,
+)
+from qsar_tl.training.toxicity_binning import (
+    ToxicityBinningConfig,
+    assign_toxicity_bin,
+    load_toxicity_bin_scheme,
+    summarize_toxicity_bins,
+    toxicity_bin_class_count,
 )
 
 
@@ -98,6 +105,15 @@ PREDICTION_METADATA_COLUMNS = (
     "target_basis",
     "target_column",
     "target_scale_key",
+    "unit_family_v2",
+    "standard_unit_v2",
+    "standard_value_mg_l",
+    "standard_value_mol_l",
+    "standard_value_mg_kg",
+    "standard_value_g_ha",
+    "standard_value_mg_kg_diet",
+    "standard_value_mg_kg_bw_day",
+    "conversion_path",
     "original_split_part",
     "medium_domain",
     "primary_medium",
@@ -122,6 +138,15 @@ PREDICTION_METADATA_COLUMNS = (
     "effect_family",
     "adapter_name",
     "adapter_id",
+    "toxicity_bin_index",
+    "toxicity_bin_label",
+    "toxicity_bin_scheme",
+    "toxicity_bin_source",
+    "toxicity_bin_boundary_flag",
+    "toxicity_bin_status",
+    "toxicity_bin_value",
+    "toxicity_bin_value_unit",
+    "toxicity_bin_conversion",
     "perturbation_replicate",
     "perturbation_numeric_noise_std",
 )
@@ -453,6 +478,10 @@ def run_deep_experiment(
     source_weighting_alpha: float | None = None,
     effect_level_weighting_enabled: bool | None = None,
     effect_level_weighting_beta: float | None = None,
+    toxicity_binning_enabled: bool | None = None,
+    toxicity_binning_mode: str | None = None,
+    toxicity_binning_loss_weight: float | None = None,
+    toxicity_binning_scheme: str | None = None,
     domain_alignment_method: str | None = None,
     domain_alignment_weight: float | None = None,
     swa_enabled: bool | None = None,
@@ -525,6 +554,15 @@ def run_deep_experiment(
         enabled_override=effect_level_weighting_enabled,
         beta_override=effect_level_weighting_beta,
     )
+    toxicity_binning_cfg = _toxicity_binning_config(
+        train_cfg,
+        enabled_override=toxicity_binning_enabled,
+        mode_override=toxicity_binning_mode,
+        loss_weight_override=toxicity_binning_loss_weight,
+        scheme_override=toxicity_binning_scheme,
+    )
+    toxicity_bin_scheme = load_toxicity_bin_scheme(toxicity_binning_cfg.scheme)
+    toxicity_bin_count = toxicity_bin_class_count(toxicity_bin_scheme) if toxicity_binning_cfg.enabled else 0
     domain_alignment_cfg = _domain_alignment_config(
         train_cfg,
         method_override=domain_alignment_method,
@@ -635,6 +673,8 @@ def run_deep_experiment(
         target_scaler=target_scaler,
         zscore_correction=zscore_correction,
         ablation=ablation_spec,
+        toxicity_binning_config=toxicity_binning_cfg,
+        toxicity_bin_scheme=toxicity_bin_scheme,
     )
     mark_internal_validation_samples(
         samples,
@@ -651,6 +691,7 @@ def run_deep_experiment(
         source_weighting_summary,
         effect_level_weighting_summary,
     )
+    toxicity_binning_summary = summarize_toxicity_bins(samples, toxicity_binning_cfg, toxicity_bin_count)
     dataset = AggregatedTaskDataset(samples=samples, fingerprint_size=fingerprint_size)
 
     train_dataset = build_noisy_index_dataset(
@@ -679,6 +720,8 @@ def run_deep_experiment(
             dropout=float(dropout if dropout is not None else config.get("model", {}).get("dropout", 0.15)),
             use_molecular_residual=ablation_spec.use_molecular_residual,
             use_adapters=ablation_spec.use_medium_adapter,
+            toxicity_bin_count=toxicity_bin_count,
+            toxicity_binning_mode=toxicity_binning_cfg.mode if toxicity_binning_cfg.enabled else "none",
         )
     )
 
@@ -702,6 +745,7 @@ def run_deep_experiment(
         device=_resolve_device(device or train_cfg.get("device", "cpu")),
         seed=seed,
         num_workers=int(train_cfg.get("num_workers", 0)),
+        toxicity_bin_loss_weight=toxicity_binning_cfg.loss_weight if toxicity_binning_cfg.active() else 0.0,
     )
     finetune_config = DeepTrainingConfig(
         epochs=requested_finetune_epochs,
@@ -720,6 +764,7 @@ def run_deep_experiment(
         device=train_config.device,
         seed=seed,
         num_workers=train_config.num_workers,
+        toxicity_bin_loss_weight=train_config.toxicity_bin_loss_weight,
     )
 
     set_torch_seed(seed)
@@ -821,6 +866,9 @@ def run_deep_experiment(
             **weighting_history_fields,
             **epoch_loss,
             "validation_loss": "" if validation_loss is None else validation_loss["mean_loss"],
+            "validation_task_loss": "" if validation_loss is None else validation_loss.get("mean_task_loss", ""),
+            "validation_toxicity_bin_loss": "" if validation_loss is None else validation_loss.get("mean_toxicity_bin_loss", ""),
+            "validation_toxicity_bin_samples": 0 if validation_loss is None else validation_loss.get("toxicity_bin_samples", 0),
             "validation_samples": 0 if validation_loss is None else validation_loss["samples"],
             "monitor_loss": monitor_loss,
             "best_epoch": best_epoch,
@@ -958,6 +1006,9 @@ def run_deep_experiment(
                 **weighting_history_fields,
                 **epoch_loss,
                 "validation_loss": "" if finetune_validation_loss is None else finetune_validation_loss["mean_loss"],
+                "validation_task_loss": "" if finetune_validation_loss is None else finetune_validation_loss.get("mean_task_loss", ""),
+                "validation_toxicity_bin_loss": "" if finetune_validation_loss is None else finetune_validation_loss.get("mean_toxicity_bin_loss", ""),
+                "validation_toxicity_bin_samples": 0 if finetune_validation_loss is None else finetune_validation_loss.get("toxicity_bin_samples", 0),
                 "validation_samples": 0 if finetune_validation_loss is None else finetune_validation_loss["samples"],
                 "monitor_loss": monitor_loss,
                 "best_epoch": finetune_best_epoch,
@@ -1024,6 +1075,21 @@ def run_deep_experiment(
         min_n_for_summary=metric_min_group_n,
     )
     filtered_effect_level_metric_rows = filter_summary_metric_rows(effect_level_metric_rows)
+    toxicity_bin_metric_rows = metrics_by_group(
+        predictions,
+        huber_delta=train_config.huber_delta,
+        group_columns=(
+            "split_part",
+            "task_head",
+            "target_name",
+            "medium_domain",
+            "toxicity_bin_status",
+            "toxicity_bin_label",
+            "toxicity_bin_boundary_flag",
+        ),
+        min_n_for_summary=metric_min_group_n,
+    )
+    toxicity_bin_boundary_audit_rows = build_toxicity_bin_boundary_audit_rows(predictions)
     split_medium_audit_rows = build_split_medium_audit_rows(frame, split_join_audit=split_join_audit)
     perturbation_predictions: list[dict[str, Any]] = []
     perturbation_summary_rows: list[dict[str, Any]] = []
@@ -1053,6 +1119,8 @@ def run_deep_experiment(
     metrics_filtered_path = output_dir / "metrics_filtered.csv"
     effect_level_metrics_path = output_dir / "effect_level_metrics.csv"
     effect_level_metrics_filtered_path = output_dir / "effect_level_metrics_filtered.csv"
+    toxicity_bin_metrics_path = output_dir / "toxicity_bin_metrics.csv"
+    toxicity_bin_boundary_audit_path = output_dir / "toxicity_bin_boundary_audit.csv"
     split_medium_audit_path = output_dir / "split_medium_audit.csv"
     predictions_path = output_dir / "predictions.csv"
     perturbation_predictions_path = output_dir / "test_noise_predictions.csv"
@@ -1066,6 +1134,8 @@ def run_deep_experiment(
     write_rows(metrics_filtered_path, filtered_metric_rows)
     write_rows(effect_level_metrics_path, effect_level_metric_rows)
     write_rows(effect_level_metrics_filtered_path, filtered_effect_level_metric_rows)
+    write_rows(toxicity_bin_metrics_path, toxicity_bin_metric_rows)
+    write_rows(toxicity_bin_boundary_audit_path, toxicity_bin_boundary_audit_rows)
     write_rows(split_medium_audit_path, split_medium_audit_rows)
     write_rows(predictions_path, predictions)
     if perturbation_predictions:
@@ -1119,6 +1189,8 @@ def run_deep_experiment(
             "filtered_metrics_path": str(metrics_filtered_path),
             "effect_level_metrics_path": str(effect_level_metrics_path),
             "effect_level_metrics_filtered_path": str(effect_level_metrics_filtered_path),
+            "toxicity_bin_metrics_path": str(toxicity_bin_metrics_path),
+            "toxicity_bin_boundary_audit_path": str(toxicity_bin_boundary_audit_path),
         },
         "split_join_audit": split_join_audit,
         "split_medium_audit_path": str(split_medium_audit_path),
@@ -1126,6 +1198,7 @@ def run_deep_experiment(
         "test_perturbation": perturbation_cfg.to_manifest(),
         "source_weighting": source_weighting_summary,
         "effect_level_weighting": effect_level_weighting_summary,
+        "toxicity_binning": toxicity_binning_summary,
         "domain_alignment": domain_alignment_summary,
         "swa": {
             **swa_cfg.to_manifest(),
@@ -1622,6 +1695,8 @@ def build_deep_samples(
     zscore_correction: ZScoreCorrection | None = None,
     adapter_map: dict[str, int] | None = None,
     ablation: AblationSpec | None = None,
+    toxicity_binning_config: ToxicityBinningConfig | None = None,
+    toxicity_bin_scheme: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     spec = ablation or ABLATION_SPECS["full"]
     samples: list[dict[str, Any]] = []
@@ -1645,6 +1720,19 @@ def build_deep_samples(
         raw_target = float(row[target_column])
         scaled_target = raw_target if target_scaler is None else target_scaler.transform(scale_key, raw_target)
         metadata = sample_metadata(row, target_column=target_column, scale_key=scale_key)
+        toxicity_fields: dict[str, Any] = {}
+        if toxicity_binning_config is not None and toxicity_bin_scheme is not None:
+            descriptor_mol_weight = (
+                descriptors[0]
+                if descriptors and getattr(encoder, "source", "") != "stable_smiles_fallback"
+                else None
+            )
+            toxicity_fields = assign_toxicity_bin(
+                row,
+                toxicity_bin_scheme,
+                config=toxicity_binning_config,
+                descriptor_mol_weight=descriptor_mol_weight,
+            ).as_sample_fields()
         samples.append(
             {
                 "sample_id": row.get("aggregate_id"),
@@ -1659,6 +1747,7 @@ def build_deep_samples(
                 "target_value_scaled": float(scaled_target),
                 "split_part": str(row.get("split_part")),
                 **metadata,
+                **toxicity_fields,
             }
         )
     return samples
@@ -2465,6 +2554,37 @@ def _effect_level_weighting_config(
     )
 
 
+def _toxicity_binning_config(
+    train_cfg: Mapping[str, Any],
+    *,
+    enabled_override: bool | None = None,
+    mode_override: str | None = None,
+    loss_weight_override: float | None = None,
+    scheme_override: str | None = None,
+) -> ToxicityBinningConfig:
+    raw = (
+        train_cfg.get("toxicity_binning", {})
+        if isinstance(train_cfg.get("toxicity_binning", {}), dict)
+        else {}
+    )
+    enabled = bool(raw.get("enabled", False) if enabled_override is None else enabled_override)
+    if mode_override is not None or loss_weight_override is not None or scheme_override is not None:
+        enabled = True
+    mode = str(mode_override if mode_override is not None else raw.get("mode", "aux_classification")).strip().lower()
+    loss_weight = max(0.0, float(loss_weight_override if loss_weight_override is not None else raw.get("loss_weight", 0.05)))
+    return ToxicityBinningConfig(
+        enabled=enabled,
+        scheme=str(scheme_override if scheme_override is not None else raw.get("scheme", "authority_v1")).strip()
+        or "authority_v1",
+        mode=mode,
+        loss_weight=loss_weight,
+        boundary_policy=str(raw.get("boundary_policy", "hard")).strip().lower() or "hard",
+        boundary_tolerance=max(0.0, float(raw.get("boundary_tolerance", 0.05))),
+        threshold_multiplier=max(1e-12, float(raw.get("threshold_multiplier", 1.0))),
+        require_active_bin_for_regression=bool(raw.get("require_active_bin_for_regression", False)),
+    )
+
+
 def _domain_alignment_config(
     train_cfg: Mapping[str, Any],
     *,
@@ -2655,6 +2775,8 @@ def train_one_epoch(
     model.train()
     total_loss = 0.0
     total_task_loss = 0.0
+    total_toxicity_bin_loss = 0.0
+    total_toxicity_bin_samples = 0
     total_alignment_loss = 0.0
     alignment_steps = 0
     total_samples = 0
@@ -2668,9 +2790,11 @@ def train_one_epoch(
         targets = batch["target_value"].to(device)
         sample_weights = batch.get("sample_weight")
         sample_weights = sample_weights.to(device) if sample_weights is not None else None
+        toxicity_bin_index = batch.get("toxicity_bin_index")
+        toxicity_bin_index = toxicity_bin_index.to(device) if toxicity_bin_index is not None else None
         task_heads = list(batch["task_head"])
         optimizer.zero_grad()
-        task_loss = batch_weighted_loss(
+        loss_components = batch_weighted_loss(
             model,
             molecular_numeric,
             fingerprint,
@@ -2682,8 +2806,12 @@ def train_one_epoch(
             config,
             device,
             sample_weights=sample_weights,
+            toxicity_bin_index=toxicity_bin_index,
+            toxicity_bin_loss_weight=config.toxicity_bin_loss_weight,
+            return_components=True,
         )
-        loss = task_loss
+        task_loss = loss_components["regression_loss"]
+        loss = loss_components["loss"]
         alignment_loss = None
         if alignment_batches is not None and alignment_weight > 0:
             reference_batch = next(alignment_batches)
@@ -2702,6 +2830,10 @@ def train_one_epoch(
         batch_size = len(task_heads)
         total_loss += float(loss.detach().cpu()) * batch_size
         total_task_loss += float(task_loss.detach().cpu()) * batch_size
+        toxicity_bin_samples = int(loss_components.get("toxicity_bin_samples", 0))
+        if toxicity_bin_samples > 0:
+            total_toxicity_bin_loss += float(loss_components["toxicity_bin_loss"].detach().cpu()) * toxicity_bin_samples
+            total_toxicity_bin_samples += toxicity_bin_samples
         if alignment_loss is not None:
             total_alignment_loss += float(alignment_loss.detach().cpu())
             alignment_steps += 1
@@ -2709,6 +2841,9 @@ def train_one_epoch(
     return {
         "mean_loss": total_loss / max(total_samples, 1),
         "mean_task_loss": total_task_loss / max(total_samples, 1),
+        "mean_toxicity_bin_loss": total_toxicity_bin_loss / max(total_toxicity_bin_samples, 1),
+        "toxicity_bin_samples": total_toxicity_bin_samples,
+        "toxicity_bin_loss_weight": config.toxicity_bin_loss_weight,
         "mean_alignment_loss": total_alignment_loss / max(alignment_steps, 1) if alignment_steps else 0.0,
         "alignment_steps": alignment_steps,
         "samples": total_samples,
@@ -2721,6 +2856,9 @@ def evaluate_loss(model: Any, dataloader: Any, loss_fn: Any, config: DeepTrainin
 
     model.eval()
     total_loss = 0.0
+    total_task_loss = 0.0
+    total_toxicity_bin_loss = 0.0
+    total_toxicity_bin_samples = 0
     total_samples = 0
     with torch.no_grad():
         for batch in dataloader:
@@ -2731,7 +2869,9 @@ def evaluate_loss(model: Any, dataloader: Any, loss_fn: Any, config: DeepTrainin
             adapter_ids = adapter_ids.to(device) if adapter_ids is not None else None
             targets = batch["target_value"].to(device)
             task_heads = list(batch["task_head"])
-            loss = batch_weighted_loss(
+            toxicity_bin_index = batch.get("toxicity_bin_index")
+            toxicity_bin_index = toxicity_bin_index.to(device) if toxicity_bin_index is not None else None
+            loss_components = batch_weighted_loss(
                 model,
                 molecular_numeric,
                 fingerprint,
@@ -2743,11 +2883,26 @@ def evaluate_loss(model: Any, dataloader: Any, loss_fn: Any, config: DeepTrainin
                 config,
                 device,
                 sample_weights=None,
+                toxicity_bin_index=toxicity_bin_index,
+                toxicity_bin_loss_weight=config.toxicity_bin_loss_weight,
+                return_components=True,
             )
+            loss = loss_components["loss"]
             batch_size = len(task_heads)
             total_loss += float(loss.detach().cpu()) * batch_size
+            total_task_loss += float(loss_components["regression_loss"].detach().cpu()) * batch_size
+            toxicity_bin_samples = int(loss_components.get("toxicity_bin_samples", 0))
+            if toxicity_bin_samples > 0:
+                total_toxicity_bin_loss += float(loss_components["toxicity_bin_loss"].detach().cpu()) * toxicity_bin_samples
+                total_toxicity_bin_samples += toxicity_bin_samples
             total_samples += batch_size
-    return {"mean_loss": total_loss / max(total_samples, 1), "samples": total_samples}
+    return {
+        "mean_loss": total_loss / max(total_samples, 1),
+        "mean_task_loss": total_task_loss / max(total_samples, 1),
+        "mean_toxicity_bin_loss": total_toxicity_bin_loss / max(total_toxicity_bin_samples, 1),
+        "toxicity_bin_samples": total_toxicity_bin_samples,
+        "samples": total_samples,
+    }
 
 
 def batch_weighted_loss(
@@ -2762,6 +2917,9 @@ def batch_weighted_loss(
     config: DeepTrainingConfig,
     device: Any,
     sample_weights: Any | None = None,
+    toxicity_bin_index: Any | None = None,
+    toxicity_bin_loss_weight: float = 0.0,
+    return_components: bool = False,
 ) -> Any:
     import torch
 
@@ -2785,8 +2943,38 @@ def batch_weighted_loss(
             )
         )
     if not losses:
-        return torch.tensor(0.0, device=device)
-    return torch.stack(losses).sum() / max(weight_sum, 1e-12)
+        regression_loss = torch.tensor(0.0, device=device)
+    else:
+        regression_loss = torch.stack(losses).sum() / max(weight_sum, 1e-12)
+    toxicity_bin_loss, toxicity_bin_samples = toxicity_bin_auxiliary_loss(outputs, toxicity_bin_index)
+    if toxicity_bin_loss is not None and float(toxicity_bin_loss_weight) > 0:
+        total_loss = regression_loss + float(toxicity_bin_loss_weight) * toxicity_bin_loss
+    else:
+        total_loss = regression_loss
+        if toxicity_bin_loss is None:
+            toxicity_bin_loss = torch.tensor(0.0, device=device)
+    if return_components:
+        return {
+            "loss": total_loss,
+            "regression_loss": regression_loss,
+            "toxicity_bin_loss": toxicity_bin_loss,
+            "toxicity_bin_samples": toxicity_bin_samples,
+        }
+    return total_loss
+
+
+def toxicity_bin_auxiliary_loss(outputs: Mapping[str, Any], toxicity_bin_index: Any | None) -> tuple[Any | None, int]:
+    import torch
+
+    logits = outputs.get(TOXICITY_BIN_LOGITS_KEY)
+    if logits is None or toxicity_bin_index is None:
+        return None, 0
+    targets = toxicity_bin_index.to(device=logits.device, dtype=torch.long)
+    mask = targets >= 0
+    count = int(mask.sum().detach().cpu())
+    if count <= 0:
+        return torch.zeros((), dtype=logits.dtype, device=logits.device), 0
+    return torch.nn.functional.cross_entropy(logits[mask], targets[mask]), count
 
 
 def masked_huber_loss(
@@ -3070,6 +3258,31 @@ def metric_summary_status(row: Mapping[str, Any], *, min_n_for_summary: int) -> 
 
 def filter_summary_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [row for row in rows if int(row.get("metric_valid_for_summary", 0) or 0) == 1]
+
+
+def build_toxicity_bin_boundary_audit_rows(predictions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str, str, str], int] = {}
+    for row in predictions:
+        key = (
+            str(row.get("split_part", "")),
+            str(row.get("medium_domain", "")),
+            str(row.get("unit_family_v2", "")),
+            str(row.get("toxicity_bin_status", "")),
+            str(row.get("toxicity_bin_boundary_flag", "")),
+        )
+        grouped[key] = grouped.get(key, 0) + 1
+    rows = [
+        {
+            "split_part": split_part,
+            "medium_domain": medium_domain,
+            "unit_family_v2": unit_family,
+            "toxicity_bin_status": status,
+            "toxicity_bin_boundary_flag": boundary_flag,
+            "n": count,
+        }
+        for (split_part, medium_domain, unit_family, status, boundary_flag), count in sorted(grouped.items())
+    ]
+    return rows or [{"n": 0}]
 
 
 def build_split_medium_audit_rows(frame: Any, *, split_join_audit: Mapping[str, Any]) -> list[dict[str, Any]]:

@@ -654,6 +654,7 @@ def test_collate_preserves_training_metadata() -> None:
             "task_head": "ECx_Mortality",
             "target_value": 1.0,
             "sample_weight": 1.5,
+            "toxicity_bin_index": 2,
             "split_part": "train",
             "medium_domain": "aquatic",
         }
@@ -662,6 +663,7 @@ def test_collate_preserves_training_metadata() -> None:
     collated = collate_aggregated_task_batch(batch)
 
     assert float(collated["sample_weight"][0]) == 1.5
+    assert int(collated["toxicity_bin_index"][0]) == 2
     assert collated["split_part"] == ["train"]
     assert collated["medium_domain"] == ["aquatic"]
 

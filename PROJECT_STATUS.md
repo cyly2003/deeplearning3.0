@@ -2,6 +2,31 @@
 
 更新时间：2026-06-22
 
+## 2026-06-22 v1.2.6 authority-based toxicity binning 矩阵
+
+- 目标：在当前框架内加入默认关闭的权威阈值毒性分箱辅助任务，并围绕迁移/不迁移、不同土壤样本比例和最佳既有超参组合设计新矩阵。
+- 分支/代码状态：
+  - 当前分支：`codex/authority-toxicity-binning-matrix`。
+  - 新增 `configs/toxicity_bins.authority_v1.yaml`，按 EPA aquatic、OECD TG 207 soil screening scaffold、EPA terrestrial oral 分类记录阈值来源。
+  - 新增 `qsar_tl/training/toxicity_binning.py`：为每个样本写入 `toxicity_bin_*` 字段；`water_mol_l` 优先用 `standard_value_mg_l`，否则用 RDKit/cache 的 `MolWt` 将 `standard_value_mol_l` 转为 `mg/L` 后分箱。未能分箱样本仍参与主回归，只从辅助 CE loss 中 mask。
+  - `EcotoxMultiTaskNetwork` 新增默认关闭的 toxicity-bin auxiliary logits；训练 loss 为原 weighted Huber regression + `loss_weight * CE(toxicity_bin)`，batch 无 eligible bin 时 CE 跳过。
+  - 训练输出新增 `toxicity_bin_metrics.csv` 与 `toxicity_bin_boundary_audit.csv`；`manifest.json` 记录 eligible、boundary、conversion/status counts；`predictions.csv` 保留分箱和单位换算字段。
+  - 新增远端矩阵脚本：`scripts/run_v1_2_6_authority_binning_matrix_remote.sh`，支持 `smoke/core/hpo/all`；新增汇总脚本：`scripts/summarize_deep_runs.py`。
+- 本地/远端验证：
+  - 本地：`E:\TOOLS\anaconda\python.exe -m pytest tests\test_toxicity_binning.py tests\test_modeling_shapes.py tests\test_deep_experiment_cache.py -q`，`38 passed`。
+  - 远端：`bash -n scripts/run_v1_2_6_authority_binning_matrix_remote.sh` + 同一 pytest，`38 passed`。
+- 远端 smoke 已通过：
+  - 输出根目录：`outputs/experiments/v1_2_6_authority_binning_matrix_remote`。
+  - soil smoke：`v1.2.6_smoke_soil_f100_authority_bin_aux_lw005/deep/full/SoilPtoxQC2_C_low_f100`，1 epoch，必需文件无缺失，eligible bin 样本 11,587，boundary 样本 1,701，eval aquatic=0。
+  - transfer smoke：`v1.2.6_smoke_transfer_f20_source_alpha1_authority_bin_aux_lw005/deep/full/M_v2_aquatic_to_soil_ptox_adapt_C_f20`，1 epoch pretrain + 1 epoch finetune，必需文件无缺失，eligible bin 样本 158,728，boundary 样本 17,933，eval aquatic=0。
+  - `water_mol_l -> mg/L` 转换已实际发生：soil smoke 中 5,137 行，transfer smoke 中 22,240 行。
+- 已启动 core 矩阵后台队列：
+  - 远端脚本：`scripts/run_v1_2_6_authority_binning_matrix_remote.sh core`。
+  - 运行状态记录：`outputs/logs/run_v1_2_6_authority_binning_matrix_times.csv`。
+  - 当前已完成：`soil_f20_authority_bin_aux_lw005_augN001`，split=`SoilPtoxQC2_C_low_f20`，duration=52s，exit=0。
+  - 当前运行中：`soil_f100_authority_bin_aux_lw005_eff050`，split=`SoilPtoxQC2_C_low_f100`。
+  - core 队列包含 soil-only f20/f100/fullC 和 transfer f20/f50/f100/source-alpha1+effect0.25 对照；HPO 队列暂未启动，待 core 结果确认后运行 `hpo` 模式。
+
 ## 2026-06-22 v1.2.5 soil-only upper-bound 矩阵
 
 - 目标：不使用水相预训练，将 `aggregated_task_records_soil_ptox_qc` 土壤样本带入当前深度框架，放大 soil-only 实验矩阵以估计当前框架下的土壤单域性能上限，并报告运行时间。

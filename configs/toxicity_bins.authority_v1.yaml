@@ -1,0 +1,141 @@
+scheme: authority_v1
+boundary_tolerance: 0.05
+boundary_policy: hard
+sources:
+  epa_aquatic_appendix_i:
+    title: EPA Appendix I Toxicity Categories and LOCs
+    url: https://www3.epa.gov/pesticides/endanger/litstatus/effects/redleg-frog/naled/appendix-i.pdf
+  un_ghs_rev10:
+    title: UN GHS Rev. 10 aquatic acute category cross-check
+    url: https://unece.org/sites/default/files/2023-07/GHS%20Rev10e.pdf
+  oecd_tg207:
+    title: OECD Test No. 207 Earthworm Acute Toxicity Tests
+    url: https://www.oecd.org/en/publications/1984/04/test-no-207-earthworm-acute-toxicity-tests_g1gh28fd.html
+  epa_terrestrial_oral_appendix_i:
+    title: EPA Appendix I terrestrial oral toxicity categories
+    url: https://www3.epa.gov/pesticides/endanger/litstatus/effects/redleg-frog/naled/appendix-i.pdf
+classes:
+  - index: 0
+    label: water_very_high_toxicity
+  - index: 1
+    label: water_high_toxicity
+  - index: 2
+    label: water_moderate_toxicity
+  - index: 3
+    label: water_low_toxicity
+  - index: 4
+    label: water_very_low_or_practically_nontoxic
+  - index: 5
+    label: soil_higher_toxicity_screening
+  - index: 6
+    label: soil_low_toxicity_screening
+  - index: 7
+    label: soil_very_low_or_practically_nontoxic_screening
+  - index: 8
+    label: oral_very_high_toxicity
+  - index: 9
+    label: oral_high_toxicity
+  - index: 10
+    label: oral_moderate_toxicity
+  - index: 11
+    label: oral_low_toxicity
+  - index: 12
+    label: oral_very_low_or_practically_nontoxic
+rules:
+  water_mg_l:
+    value_unit: mg/L
+    source: epa_aquatic_appendix_i
+    source_cross_check: un_ghs_rev10
+    enabled_for_aux_loss: true
+    value_columns:
+      - standard_value_mg_l
+    bins:
+      - upper: 0.1
+        index: 0
+        label: water_very_high_toxicity
+      - upper: 1.0
+        index: 1
+        label: water_high_toxicity
+      - upper: 10.0
+        index: 2
+        label: water_moderate_toxicity
+      - upper: 100.0
+        index: 3
+        label: water_low_toxicity
+      - lower_exclusive: 100.0
+        index: 4
+        label: water_very_low_or_practically_nontoxic
+  water_mol_l:
+    value_unit: mg/L
+    source: epa_aquatic_appendix_i
+    source_cross_check: un_ghs_rev10
+    enabled_for_aux_loss: true
+    conversion: mol_l_to_mg_l_using_molecular_weight
+    value_columns:
+      - standard_value_mg_l
+      - standard_value_mol_l
+    bins:
+      - upper: 0.1
+        index: 0
+        label: water_very_high_toxicity
+      - upper: 1.0
+        index: 1
+        label: water_high_toxicity
+      - upper: 10.0
+        index: 2
+        label: water_moderate_toxicity
+      - upper: 100.0
+        index: 3
+        label: water_low_toxicity
+      - lower_exclusive: 100.0
+        index: 4
+        label: water_very_low_or_practically_nontoxic
+  soil_mg_kg:
+    value_unit: mg/kg
+    source: oecd_tg207
+    enabled_for_aux_loss: true
+    note: method-threshold screening scaffold, not a universal GHS-style soil hazard class
+    value_columns:
+      - standard_value_mg_kg
+    bins:
+      - upper: 100.0
+        index: 5
+        label: soil_higher_toxicity_screening
+      - upper: 1000.0
+        index: 6
+        label: soil_low_toxicity_screening
+      - lower_exclusive: 1000.0
+        index: 7
+        label: soil_very_low_or_practically_nontoxic_screening
+  oral_mg_kg_d:
+    value_unit: mg/kg-bw
+    source: epa_terrestrial_oral_appendix_i
+    enabled_for_aux_loss: true
+    endpoint_context: oral_acute_ld50_compatible_only
+    value_columns:
+      - standard_value_mg_kg_bw_day
+    bins:
+      - upper: 10.0
+        index: 8
+        label: oral_very_high_toxicity
+      - upper: 50.0
+        index: 9
+        label: oral_high_toxicity
+      - upper: 500.0
+        index: 10
+        label: oral_moderate_toxicity
+      - upper: 2000.0
+        index: 11
+        label: oral_low_toxicity
+      - lower_exclusive: 2000.0
+        index: 12
+        label: oral_very_low_or_practically_nontoxic
+unsupported_unit_families:
+  - soil_g_ha
+  - soil_l_ha
+  - seed_g_kg
+  - seed_ml_kg
+  - percent
+  - mass_per_organism_mg
+  - mass_per_experimental_unit_mg
+  - diet_mg_kg
