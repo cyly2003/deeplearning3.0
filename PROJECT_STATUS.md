@@ -23,9 +23,34 @@
 - 已启动 core 矩阵后台队列：
   - 远端脚本：`scripts/run_v1_2_6_authority_binning_matrix_remote.sh core`。
   - 运行状态记录：`outputs/logs/run_v1_2_6_authority_binning_matrix_times.csv`。
-  - 当前已完成：`soil_f20_authority_bin_aux_lw005_augN001`，split=`SoilPtoxQC2_C_low_f20`，duration=52s，exit=0。
-  - 当前运行中：`soil_f100_authority_bin_aux_lw005_eff050`，split=`SoilPtoxQC2_C_low_f100`。
-  - core 队列包含 soil-only f20/f100/fullC 和 transfer f20/f50/f100/source-alpha1+effect0.25 对照；HPO 队列暂未启动，待 core 结果确认后运行 `hpo` 模式。
+  - core 队列 7 个正式 run 均已完成，exit=0；另有 2 个 smoke run，exit=0。
+  - 远端汇总目录：`outputs/experiments/v1_2_6_authority_binning_matrix_remote_summary`。
+  - 汇总文件：`focus_summary.csv`、`family_summary.csv`、`effect_level_summary.csv`、`toxicity_bin_summary.csv`、`audit_summary.csv`、`best_by_split.csv`、`common_task_comparison.csv`。
+- core audit：
+  - 9 个 smoke/core run 的 `required_files_present=True`，`aquatic_eval_rows=0`。
+  - eligible bin 覆盖：soil f20 2,623；soil f100/fullC 11,587；transfer f20 158,728；transfer f50 166,751；transfer f100 172,773。
+- core ECx/NOEC/LOEC focus test 指标：
+  - `transfer_f20_source_alpha1_authority_bin_aux_lw005`：n=2,557，任务头=25，R2=0.2978，RMSE=1.5081，MAE=1.1478。
+  - `transfer_f20_source_alpha1_effect025_authority_bin_aux_lw005`：n=2,557，任务头=25，R2=0.2119，MAE=1.2009；说明 authority-bin 与 effect-level beta0.25 叠加不稳，会拖累 NOEC/LOEC。
+  - `transfer_f50_source_alpha1_authority_bin_aux_lw005`：n=2,591，任务头=29，R2=0.3971，MAE=1.0713。
+  - `transfer_f100_source_alpha1_authority_bin_aux_lw005`：n=2,594，任务头=30，R2=0.4770，MAE=0.9993。
+  - `soil_f20_authority_bin_aux_lw005_augN001`：n=1,407，任务头=6，R2=0.0342，MAE=1.2815；明显弱于既有 f20 soil-only/transfer。
+  - `soil_f100_authority_bin_aux_lw005_eff050`：n=2,266，任务头=17，R2=0.4500，MAE=1.0200；弱于 v1.2.5 f100 最佳 MAE=0.9897。
+  - `soil_fullC_authority_bin_aux_lw005_core`：n=2,266，任务头=17，R2=0.4677，MAE=1.0036；与 v1.2.5 fullC 最佳 MAE=1.0013 基本持平。
+- 共同任务头公平对比：
+  - f20 common 6-task：soil f20 MAE=1.2815/R2=0.0342；transfer f20 authority-bin MAE=1.1637/R2=0.2467。
+  - f20 common 6-task + effect0.25：transfer MAE=1.2252/R2=0.1278，差于不加 effect0.25。
+  - f100 common 17-task：soil f100 MAE=1.0200/R2=0.4500；transfer f100 authority-bin MAE=0.9972/R2=0.4705。
+  - fullC soil vs transfer f100 common 17-task：soil fullC MAE=1.0036/R2=0.4677；transfer f100 authority-bin MAE=0.9972/R2=0.4705。
+- 当前判断：
+  - authority-bin auxiliary loss 对 `source_weighting=tanimoto_to_finetune alpha=1.0` 的迁移路线有实质收益：f20 test MAE 从上一轮 `matrix_source_tanimoto_alpha1` 的 1.1634 降到 1.1478，R2 从 0.2785 提到 0.2978。
+  - authority-bin 对 soil-only fullC 基本中性，对 soil-only f20/f100 不如上一轮 best；因此它更像是迁移阶段的辅助结构正则，而不是 soil-only 的通用提升。
+  - 下一步 HPO 不应继续强化 effect-level beta，而应围绕 `toxicity_binning.loss_weight` 做轻量敏感性。
+- HPO 队列：
+  - 已启动：`bash scripts/run_v1_2_6_authority_binning_matrix_remote.sh hpo`。
+  - 日志：`outputs/logs/run_v1_2_6_authority_binning_matrix_hpo_20260622_181645.log`。
+  - 当前运行：`soil_f100_authority_bin_aux_lw0025_eff050`。
+  - HPO 内容：loss_weight `0.025/0.10` 对 soil f100/fullC、transfer f20/f100 做敏感性，并保留两个 transfer f20 + effect0.25 低/高 loss 对照；若 effect0.25 仍差，将从后续矩阵剔除。
 
 ## 2026-06-22 v1.2.5 soil-only upper-bound 矩阵
 
