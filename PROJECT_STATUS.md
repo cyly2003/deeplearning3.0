@@ -25,7 +25,7 @@
   - 运行状态记录：`outputs/logs/run_v1_2_6_authority_binning_matrix_times.csv`。
   - core 队列 7 个正式 run 均已完成，exit=0；另有 2 个 smoke run，exit=0。
   - 远端汇总目录：`outputs/experiments/v1_2_6_authority_binning_matrix_remote_summary`。
-  - 汇总文件：`focus_summary.csv`、`family_summary.csv`、`effect_level_summary.csv`、`toxicity_bin_summary.csv`、`audit_summary.csv`、`best_by_split.csv`、`common_task_comparison.csv`。
+  - 汇总文件：`focus_summary.csv`、`family_summary.csv`、`effect_level_summary.csv`、`toxicity_bin_summary.csv`、`audit_summary.csv`、`best_by_split.csv`、`common_task_summary.csv`、`common_task_comparison.csv`。
 - core audit：
   - 9 个 smoke/core run 的 `required_files_present=True`，`aquatic_eval_rows=0`。
   - eligible bin 覆盖：soil f20 2,623；soil f100/fullC 11,587；transfer f20 158,728；transfer f50 166,751；transfer f100 172,773。
@@ -47,10 +47,19 @@
   - authority-bin 对 soil-only fullC 基本中性，对 soil-only f20/f100 不如上一轮 best；因此它更像是迁移阶段的辅助结构正则，而不是 soil-only 的通用提升。
   - 下一步 HPO 不应继续强化 effect-level beta，而应围绕 `toxicity_binning.loss_weight` 做轻量敏感性。
 - HPO 队列：
-  - 已启动：`bash scripts/run_v1_2_6_authority_binning_matrix_remote.sh hpo`。
+  - 已完成：`bash scripts/run_v1_2_6_authority_binning_matrix_remote.sh hpo`，完成时间 2026-06-22 21:02:27 +08:00。
   - 日志：`outputs/logs/run_v1_2_6_authority_binning_matrix_hpo_20260622_181645.log`。
-  - 当前运行：`soil_f100_authority_bin_aux_lw0025_eff050`。
-  - HPO 内容：loss_weight `0.025/0.10` 对 soil f100/fullC、transfer f20/f100 做敏感性，并保留两个 transfer f20 + effect0.25 低/高 loss 对照；若 effect0.25 仍差，将从后续矩阵剔除。
+  - HPO + core 总计 19 个 run；`audit_summary.csv` 核验 `required_files_present=True`、`aquatic_eval_rows=0`、`exit_code=0`。
+  - HPO 内容：loss_weight `0.025/0.10` 对 soil f100/fullC、transfer f20/f100 做敏感性，并补跑 transfer f20 + effect0.25 的 lw0025/lw010 联合对照。
+- HPO 最终结论：
+  - f20 transfer 最优仍是默认 `toxicity_binning.loss_weight=0.05`：test n=2,557，R2=0.2978，MAE=1.1478；`0.025` 和 `0.10` 分别为 MAE=1.1812/R2=0.2588、MAE=1.1827/R2=0.2534。
+  - f100 transfer 最优为 `toxicity_binning.loss_weight=0.025`：test n=2,594，R2=0.4978，MAE=0.9768；优于默认 0.05 的 MAE=0.9993/R2=0.4770，也略优于 v1.2.5 soil-only f100 最佳 MAE=0.9897/R2=0.4851。
+  - soil-only 中 authority-bin HPO 未超过 v1.2.5 soil-only 上限：soil f100 最好为 lw005/lw010 约 MAE=1.020-1.022，fullC 最好仍是 lw005 MAE=1.0036/R2=0.4677。
+  - effect-level beta0.25 与 authority-bin 叠加仍不建议作为主策略：f20 + effect0.25 最好是 lw010，test MAE=1.1532/R2=0.2766；MAE 接近但仍差于不加 effect-level 的 1.1478/R2=0.2978，且默认 lw005 叠加会明显退化到 MAE=1.2009/R2=0.2119。
+  - 共同任务公平对比：f20 common 6-task 最优仍是 transfer f20 authority lw005，MAE=1.1637/R2=0.2467；f100 common 17-task 最优为 transfer f100 authority lw0025，MAE=0.9827/R2=0.4820；fullC soil vs transfer f100 common 17-task 中，transfer f100 lw0025 也优于 soil fullC authority lw005（MAE=0.9827 vs 1.0036）。
+  - family 分层中，transfer f100 lw0025 的 ECx/LOEC/NOEC test MAE 分别为 0.8491/1.0098/1.0065，R2 分别为 0.5654/0.5088/0.4557；相对 f20 lw005 的 1.0183/1.1704/1.1891 和 0.3707/0.3226/0.2375 明显改善。
+  - toxicity-bin 分层显示当前 test 样本主要按水相 mg/L 阈值进入 `water_*` bin；bin 内 R2 因硬分箱后目标范围变窄常为负，分层诊断应以 MAE 和边界样本数量为主。`water_very_high_toxicity` 仍是高误差层，f100 lw0025 non-boundary MAE=1.5061，f20 lw005 non-boundary MAE=2.2165。
+  - 下一轮建议：迁移主线保留 `source_weighting=tanimoto_to_finetune alpha=1.0` + authority-bin aux；f20 用 loss_weight=0.05，f100/fullC 方向优先试 loss_weight=0.025；暂不继续 Phase 3 soft-expert 或 effect-level 叠加，除非先做针对高毒 bin 的专门误差修正。
 
 ## 2026-06-22 v1.2.5 soil-only upper-bound 矩阵
 

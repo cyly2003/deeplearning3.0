@@ -40,6 +40,7 @@ def main() -> None:
     effect_rows: list[dict[str, object]] = []
     bin_rows: list[dict[str, object]] = []
     audit_rows: list[dict[str, object]] = []
+    common_inputs: list[dict[str, object]] = []
 
     for pred_path in sorted(root.glob("*/deep/*/*/predictions.csv")):
         run_dir = pred_path.parent
@@ -86,6 +87,15 @@ def main() -> None:
         for split_part in sorted(EVAL_SPLITS):
             focus = focus_prediction_rows(rows, split_part=split_part)
             if focus:
+                common_inputs.append(
+                    {
+                        "run": strip_version_prefix(run_name),
+                        "split_name": split_name,
+                        "split_key": split_key(split_name),
+                        "prediction_split_part": split_part,
+                        "rows": focus,
+                    }
+                )
                 focus_rows_out.append(
                     {
                         "run": strip_version_prefix(run_name),
@@ -189,6 +199,23 @@ def main() -> None:
         best_by_split(focus_rows_out),
         ["split_key", "rank_metric", "rank", "run", "split_name", "prediction_split_part", "n", "r2", "rmse", "mae", "huber_loss", "task_count", "tasks"],
     )
+    common_rows = common_task_summary(common_inputs)
+    common_task_fieldnames = [
+        "comparison_group",
+        "prediction_split_part",
+        "run",
+        "split_name",
+        "split_key",
+        "n",
+        "r2",
+        "rmse",
+        "mae",
+        "huber_loss",
+        "task_count",
+        "tasks",
+    ]
+    write_csv(out_dir / "common_task_summary.csv", common_rows, common_task_fieldnames)
+    write_csv(out_dir / "common_task_comparison.csv", common_rows, common_task_fieldnames)
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -332,6 +359,63 @@ def best_by_split(rows: list[dict[str, object]]) -> list[dict[str, object]]:
         for rank, row in enumerate(ranked_r2[:10], start=1):
             output.append({"split_key": key, "rank_metric": "r2", "rank": rank, **row})
     return output
+
+
+def common_task_summary(inputs: list[dict[str, object]]) -> list[dict[str, object]]:
+    output: list[dict[str, object]] = []
+    filtered = [row for row in inputs if not str(row.get("run", "")).startswith("smoke_")]
+    for split_part in sorted({str(row.get("prediction_split_part", "")) for row in filtered}):
+        split_rows = [row for row in filtered if row.get("prediction_split_part") == split_part]
+        groups: dict[str, list[dict[str, object]]] = {}
+        for key in ("f20", "f50", "f100", "fullC"):
+            members = [row for row in split_rows if row.get("split_key") == key]
+            if len(members) >= 2:
+                groups[key] = members
+        fullc_f100 = [
+            row
+            for row in split_rows
+            if row.get("split_key") == "fullC"
+            or (row.get("split_key") == "f100" and str(row.get("run", "")).startswith("transfer_"))
+        ]
+        if any(row.get("split_key") == "fullC" for row in fullc_f100) and any(
+            row.get("split_key") == "f100" for row in fullc_f100
+        ):
+            groups["fullC_vs_transfer_f100"] = fullc_f100
+
+        for group_name, members in sorted(groups.items()):
+            common_tasks = intersect_tasks(members)
+            if not common_tasks:
+                continue
+            for member in members:
+                rows = [row for row in member["rows"] if row.get("task_head", "") in common_tasks]  # type: ignore[index]
+                if not rows:
+                    continue
+                output.append(
+                    {
+                        "comparison_group": group_name,
+                        "prediction_split_part": split_part,
+                        "run": member.get("run", ""),
+                        "split_name": member.get("split_name", ""),
+                        "split_key": member.get("split_key", ""),
+                        **metrics_from_prediction_rows(rows),
+                    }
+                )
+    return output
+
+
+def intersect_tasks(members: list[dict[str, object]]) -> set[str]:
+    task_sets: list[set[str]] = []
+    for member in members:
+        rows = member.get("rows", [])
+        if not isinstance(rows, list):
+            continue
+        tasks = {str(row.get("task_head", "")) for row in rows if isinstance(row, dict) and row.get("task_head")}
+        if tasks:
+            task_sets.append(tasks)
+    if not task_sets:
+        return set()
+    common = set.intersection(*task_sets)
+    return set(common)
 
 
 if __name__ == "__main__":
