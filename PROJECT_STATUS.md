@@ -1,6 +1,55 @@
 # Project Status
 
-更新时间：2026-06-21
+更新时间：2026-06-22
+
+## 2026-06-22 v1.2.5 soil-only upper-bound 矩阵
+
+- 目标：不使用水相预训练，将 `aggregated_task_records_soil_ptox_qc` 土壤样本带入当前深度框架，放大 soil-only 实验矩阵以估计当前框架下的土壤单域性能上限，并报告运行时间。
+- 分支/代码状态：
+  - 当前分支：`codex/workspace-cleanup-20260622`。
+  - 发现传统模型基线存在目标字段泄漏风险：新版聚合字段 `target_value_weighted_mean`、`target_value_unweighted_median`、`target_value_weighted_std` 未被排除，导致初次传统基线出现近零 MAE/近 1 R2 的不可信结果。
+  - 已修补 `qsar_tl/training/baseline.py`：排除所有 `target_value*` 与 `tox_value*` 前缀字段；已补充 `tests/test_baseline_models.py` 定向测试。
+  - 测试：本地 `E:\TOOLS\anaconda\python.exe -m pytest tests\test_baseline_models.py -q` 通过，远端同一测试也通过，均为 `7 passed`。
+- 运行矩阵：
+  - 深度模型 99 个 run：`SoilPtoxQC2_C_low_f20`、`SoilPtoxQC2_C_low_f100`、`SoilPtoxQC2_C_chemical_holdout_8_2` 三个 split。
+  - 核心网格：learning rate `0.0003/0.0005/0.0008` × dropout `0.05/0.10/0.20` × weight decay `1e-6/9.856751793848817e-06/3e-5`，`epochs=50`，early stopping patience 15。
+  - 附加策略：effect-level weighting beta `0.25/0.50`、数值噪声增强 `0.01/0.03`、80 epoch 长跑对照。
+  - 修补后 no-leakage 传统基线 18 个 run：RandomForest、ExtraTrees、XGBoost、LightGBM、HistGradientBoosting、ElasticNet × 3 个 split；MLP 因 sklearn `_best_coefs` 异常未纳入 no-leakage 重跑。
+- 运行时间：
+  - 主矩阵日志：`outputs/logs/run_v1_2_5_soil_only_upper_bound_20260622.log`。
+  - 主矩阵墙钟：2026-06-22 08:35:51 到 11:16:43，约 2:40:52；`run_times` 中 120 个计时任务，117 个成功，成功任务累计 9627 秒。其中深度模型 99 个成功，初次传统基线 18 个成功、3 个 MLP 失败。
+  - no-leakage 传统基线日志：`outputs/logs/run_v1_2_5_soil_only_traditional_baselines_noleakage_20260622.nohup.log`。
+  - no-leakage 传统基线墙钟：2026-06-22 11:35:57 到 11:43:35，约 7:38；18/18 成功，累计 457 秒。
+- 输出与本地回收：
+  - 远端深度完整结果：`outputs/experiments/v1_2_5_soil_only_upper_bound_remote`，约 746 MB；模型权重约 157 MB。本地仅回收 summary 与日志，完整 artifact 保留远端，避免无必要同步大文件。
+  - 本地深度 summary：`outputs/experiments/v1_2_5_soil_only_upper_bound_remote_summary`。
+  - no-leakage 传统基线完整小目录：`outputs/experiments/v1_2_5_soil_only_traditional_baselines_noleakage_remote`。
+  - 关键新增汇总：`v1_2_5_soil_only_upper_bound_comparison.csv`、`v1_2_5_best_family_summary.csv`、`v1_2_5_best_effect_level_summary.csv`、`traditional_baseline_focus_comparable.csv`。
+- 审计：
+  - `deep_audit_summary.csv` 中所有 v1.2.5 soil-only run 的 `required_files_present=True`，`aquatic_eval_rows=0`。
+  - 代表性 prediction medium counts：f20 为 `{"test|soil": 1407, "train|soil": 1603}`；f100/fullC 为 `{"test|soil": 2322, "train|soil": 11254}`。
+- 深度模型最佳结果，均为 ECx/LOEC/NOEC focus test：
+  - f20 最低 MAE：`augN001_f20_lr5e4_do010_wd1e5_e50`，n=1407，任务头=6，R2=0.1145，RMSE=1.6232，MAE=1.2310，Huber=0.8279。
+  - f20 最高 R2：`core_f20_lr3e4_do005_wd1e5_e50`，n=1407，任务头=6，R2=0.1421，RMSE=1.5976，MAE=1.2407，Huber=0.8275。
+  - f100 最佳：`eff050_f100_lr5e4_do010_wd1e5_e50`，n=2266，任务头=17，R2=0.4851，RMSE=1.3001，MAE=0.9897，Huber=0.6041。
+  - full_C 最佳：`core_fullC_lr3e4_do020_wd1e5_e50`，n=2266，任务头=17，R2=0.4617，RMSE=1.3293，MAE=1.0013，Huber=0.6166。
+- 与 v1.2.4/current transfer 对照：
+  - f20：v1.2.5 最低 MAE=1.2310，未超过 v1.2.4 `soilonly_current_low_f20` 的 MAE=1.2084；也弱于迁移 common-task 最好结果，例如 `source_tanimoto_alpha1_effect_beta0p5` common f20 MAE=1.1762。说明低土壤样本下，水相预训练/迁移仍主要提供小样本补偿。
+  - f100：v1.2.5 最佳 MAE=0.9897，优于 v1.2.4 `soilonly_current_low_f100` 的 MAE=1.0486，也明显优于 `matrix_source_tanimoto_alpha1` common f100 MAE=1.1680。
+  - full_C：v1.2.5 最佳 MAE=1.0013，略优于 v1.2.4 `soilonly_current_full_C` 的 MAE=1.0095，R2 从 0.4456 提升到 0.4617。
+- 分层结果：
+  - f100 最佳 run：ECx MAE=0.8050、LOEC MAE=1.0331、NOEC MAE=1.0324；ECx/LOEC/NOEC R2 分别为 0.5994/0.4861/0.4377。
+  - full_C 最佳 run：ECx MAE=0.8148、LOEC MAE=1.0377、NOEC MAE=1.0511；ECx/LOEC/NOEC R2 分别为 0.5985/0.4777/0.3904。
+  - f20 最佳 run：ECx 只覆盖 `ECx_Growth`，MAE=1.0721；LOEC MAE=1.2127；NOEC MAE=1.2977。NOEC 仍是低样本下最难稳定的族。
+  - ECx effect-level：f100/full_C 的 EC50 层 n=375，MAE 约 0.82-0.84，R2 约 0.53；EC10/EC25 样本量很小，单层 R2 波动较大，不能过度解释。
+- no-leakage 传统基线可比口径：
+  - f20 最佳为 HistGradientBoosting：R2=-0.0247，MAE=1.3250。
+  - f100/fullC 最佳为 RandomForest：R2=0.3314，MAE=1.0796。
+  - 传统模型不再出现不合理近零误差；在相同任务集合下低于深度模型，说明当前深度框架的上限主要来自多任务深度表征而不是树模型基线。
+- 当前结论：
+  - 土壤样本足够时，soil-only 在当前框架内的上限约为 MAE 1.0 log unit、R2 0.46-0.49；轻量 HPO 与 effect-level beta0.5 能进一步改善 f100。
+  - 低样本 f20 未因更大 soil-only 网格而提升，反而略弱于 v1.2.4 和迁移共同任务结果；因此迁移学习的价值目前集中在低土壤样本/任务覆盖不足场景，而不是足量土壤样本下超过 soil-only。
+  - 后续若继续探索上限，优先做 soil-only f20 的数据增强/任务重采样和按任务族的验证集调参；不建议再盲目扩大全局 LR/dropout/weight decay 网格。
 
 ## 2026-06-21 v1.2.4 soil-only current-framework 对照
 

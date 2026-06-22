@@ -100,6 +100,10 @@ EXCLUDED_FEATURE_COLUMNS = {
     "medium_domain_reason",
     "medium_conflict_flag",
 }
+EXCLUDED_FEATURE_PREFIXES = (
+    "target_value",
+    "tox_value",
+)
 
 CATEGORICAL_HINT_COLUMNS = {
     "cas_number",
@@ -639,7 +643,12 @@ def select_feature_columns(frame: pd.DataFrame, *, target_column: str, task_colu
     excluded = set(EXCLUDED_FEATURE_COLUMNS)
     excluded.add(target_column)
     excluded.add(task_column)
-    return [column for column in frame.columns if column not in excluded]
+    return [
+        column
+        for column in frame.columns
+        if column not in excluded
+        and not any(column.startswith(prefix) for prefix in EXCLUDED_FEATURE_PREFIXES)
+    ]
 
 
 def build_model(model_name: str, *, seed: int, n_features: int | None = None) -> Any:

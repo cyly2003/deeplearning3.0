@@ -45,6 +45,9 @@ def test_unit_v2_metadata_are_excluded_from_baseline_features() -> None:
     frame = pd.DataFrame(
         {
             "target_value_median": [1.0],
+            "target_value_weighted_mean": [1.0],
+            "target_value_unweighted_median": [1.0],
+            "target_value_weighted_std": [0.1],
             "task_head": ["ECx_Mortality"],
             "conc1_mean": [10.0],
             "conc1_unit": ["mg/L"],
@@ -74,6 +77,9 @@ def test_unit_v2_metadata_are_excluded_from_baseline_features() -> None:
     assert "unit_conversion_source" not in features
     assert "target_family" not in features
     assert "standard_value_mg_l" not in features
+    assert "target_value_weighted_mean" not in features
+    assert "target_value_unweighted_median" not in features
+    assert "target_value_weighted_std" not in features
 
 
 def test_validate_single_target_dimension_allows_one_target_scale() -> None:
