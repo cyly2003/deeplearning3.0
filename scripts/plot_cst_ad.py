@@ -31,7 +31,10 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     configure_style()
     plot_chemical_species_space(rows, out_dir, args.prefix)
+    plot_chemical_species_space_by_task_family(rows, out_dir, args.prefix)
+    plot_individual_task_family_spaces(rows, out_dir, args.prefix)
     plot_tier_performance(summary, out_dir, args.prefix)
+    plot_tier_performance_by_task_family(rows, out_dir, args.prefix)
     plot_observed_vs_predicted(rows, out_dir, args.prefix)
     plot_uncertainty(rows, out_dir, args.prefix)
 
@@ -74,7 +77,7 @@ def plot_chemical_species_space(frame: pd.DataFrame, out_dir: Path, prefix: str)
     add_threshold_lines(ax, data)
     ax.set_xlabel("Chemical similarity to training set (max Tanimoto)")
     ax.set_ylabel("Species taxonomy similarity to training set")
-    ax.set_title("CST-AD chemical-species space")
+    ax.set_title("CST-AD chemical-species space (all endpoint families)")
     cbar = fig.colorbar(scatter, ax=ax, pad=0.02)
     cbar.set_label("Mean absolute error on log10 toxicity scale")
     legend_sizes = [10, 100, 500]
@@ -85,6 +88,115 @@ def plot_chemical_species_space(frame: pd.DataFrame, out_dir: Path, prefix: str)
     ax.legend(handles, [str(value) for value in legend_sizes], title="Samples", frameon=False, loc="lower left")
     ax.grid(alpha=0.18, linewidth=0.6)
     save(fig, out_dir / f"{prefix}_chemical_species_space")
+
+
+def plot_chemical_species_space_by_task_family(frame: pd.DataFrame, out_dir: Path, prefix: str) -> None:
+    if "task_family" not in frame.columns:
+        return
+    data = prepare_chemical_species_plot_data(frame)
+    families = sorted(str(value) for value in data["task_family"].dropna().unique())
+    if not families:
+        return
+    fig, axes = plt.subplots(
+        1,
+        len(families),
+        figsize=(4.8 * len(families) + 0.8, 4.7),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+    color_max = float(data["mean_abs_error"].quantile(0.98)) if not data.empty else 1.0
+    mappable = None
+    for ax, family in zip(axes.ravel(), families):
+        sub = data[data["task_family"].astype(str).eq(family)]
+        if sub.empty:
+            ax.set_visible(False)
+            continue
+        sizes = 26.0 + 18.0 * np.sqrt(sub["n"].to_numpy(dtype=float))
+        mappable = ax.scatter(
+            sub["plot_chemical_score"],
+            sub["plot_species_score"],
+            c=sub["mean_abs_error"].clip(upper=color_max),
+            s=sizes,
+            cmap="viridis",
+            vmin=0,
+            vmax=color_max,
+            alpha=0.80,
+            linewidths=0.35,
+            edgecolors="white",
+        )
+        add_threshold_lines(ax, frame)
+        ax.set_title(f"{family} (n={int(sub['n'].sum())})")
+        ax.grid(alpha=0.18, linewidth=0.6)
+    axes[0, 0].set_ylabel("Species taxonomy similarity to training set")
+    for ax in axes.ravel():
+        ax.set_xlabel("Chemical similarity to training set")
+    if mappable is not None:
+        fig.subplots_adjust(left=0.065, right=0.90, bottom=0.14, top=0.82, wspace=0.08)
+        cbar_ax = fig.add_axes([0.925, 0.20, 0.015, 0.56])
+        cbar = fig.colorbar(mappable, cax=cbar_ax)
+        cbar.set_label("Mean absolute error on log10 toxicity scale")
+    fig.suptitle("CST-AD chemical-species space by endpoint family", y=1.02)
+    save(fig, out_dir / f"{prefix}_chemical_species_space_by_task_family", tight=False)
+
+
+def plot_individual_task_family_spaces(frame: pd.DataFrame, out_dir: Path, prefix: str) -> None:
+    if "task_family" not in frame.columns:
+        return
+    for family in sorted(str(value) for value in frame["task_family"].dropna().unique()):
+        sub = frame[frame["task_family"].astype(str).eq(family)]
+        if sub.empty:
+            continue
+        plot_single_task_family_space(sub, out_dir, f"{prefix}_chemical_species_space_{sanitize(family)}", family)
+
+
+def plot_single_task_family_space(frame: pd.DataFrame, out_dir: Path, stem: str, family: str) -> None:
+    grouped = prepare_chemical_species_plot_data(frame)
+    fig, ax = plt.subplots(figsize=(5.8, 4.8))
+    sizes = 26.0 + 18.0 * np.sqrt(grouped["n"].to_numpy(dtype=float))
+    scatter = ax.scatter(
+        grouped["plot_chemical_score"],
+        grouped["plot_species_score"],
+        c=grouped["mean_abs_error"],
+        s=sizes,
+        cmap="viridis",
+        alpha=0.80,
+        linewidths=0.35,
+        edgecolors="white",
+    )
+    add_threshold_lines(ax, frame)
+    ax.set_xlabel("Chemical similarity to training set (max Tanimoto)")
+    ax.set_ylabel("Species taxonomy similarity to training set")
+    ax.set_title(f"CST-AD chemical-species space: {family}")
+    cbar = fig.colorbar(scatter, ax=ax, pad=0.02)
+    cbar.set_label("Mean absolute error on log10 toxicity scale")
+    add_sample_size_legend(ax)
+    ax.grid(alpha=0.18, linewidth=0.6)
+    save(fig, out_dir / stem)
+
+
+def prepare_chemical_species_plot_data(frame: pd.DataFrame) -> pd.DataFrame:
+    data = frame.copy()
+    data["plot_chemical_score"] = pd.to_numeric(data["cst_chemical_score"], errors="coerce").round(4)
+    data["plot_species_score"] = pd.to_numeric(data["cst_species_score"], errors="coerce").round(4)
+    data["plot_abs_error"] = pd.to_numeric(data["abs_error"], errors="coerce")
+    group_columns = ["plot_chemical_score", "plot_species_score"]
+    if "task_family" in data.columns:
+        group_columns.append("task_family")
+    return (
+        data.dropna(subset=["plot_chemical_score", "plot_species_score"])
+        .groupby(group_columns, as_index=False)
+        .agg(n=("plot_abs_error", "size"), mean_abs_error=("plot_abs_error", "mean"))
+    )
+
+
+def add_sample_size_legend(ax: plt.Axes) -> None:
+    legend_sizes = [10, 100, 500]
+    handles = [
+        ax.scatter([], [], s=26.0 + 18.0 * np.sqrt(value), color="#777777", alpha=0.45, linewidths=0)
+        for value in legend_sizes
+    ]
+    ax.legend(handles, [str(value) for value in legend_sizes], title="Samples", frameon=False, loc="lower left")
 
 
 def add_threshold_lines(ax: plt.Axes, frame: pd.DataFrame) -> None:
@@ -119,6 +231,46 @@ def plot_tier_performance(summary: pd.DataFrame, out_dir: Path, prefix: str) -> 
     axes[1].set_title("Test-set coverage")
     axes[1].grid(axis="y", alpha=0.18, linewidth=0.6)
     save(fig, out_dir / f"{prefix}_tier_performance")
+
+
+def plot_tier_performance_by_task_family(frame: pd.DataFrame, out_dir: Path, prefix: str) -> None:
+    if "task_family" not in frame.columns:
+        return
+    rows = []
+    for (family, tier), sub in frame.groupby(["task_family", "cst_ad_tier"], dropna=False, sort=True):
+        residual = pd.to_numeric(sub["y_true"], errors="coerce") - pd.to_numeric(sub["y_pred"], errors="coerce")
+        family_total = int((frame["task_family"].astype(str) == str(family)).sum())
+        rows.append(
+            {
+                "task_family": str(family),
+                "cst_ad_tier": str(tier),
+                "mae": float(residual.abs().mean()),
+                "coverage_fraction": len(sub) / family_total if family_total else np.nan,
+            }
+        )
+    data = pd.DataFrame(rows)
+    if data.empty:
+        return
+    families = sorted(data["task_family"].unique())
+    x = np.arange(len(TIER_ORDER))
+    width = 0.78 / max(len(families), 1)
+    fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.8), sharex=True)
+    for index, family in enumerate(families):
+        sub = data[data["task_family"].eq(family)].set_index("cst_ad_tier").reindex(TIER_ORDER)
+        offset = (index - (len(families) - 1) / 2) * width
+        axes[0].bar(x + offset, sub["mae"], width=width, label=family)
+        axes[1].bar(x + offset, sub["coverage_fraction"] * 100.0, width=width, label=family)
+    axes[0].set_ylabel("MAE on log10 toxicity scale")
+    axes[0].set_title("Prediction error by endpoint family")
+    axes[1].set_ylabel("Coverage (%)")
+    axes[1].set_title("Coverage by endpoint family")
+    for ax in axes:
+        ax.set_xticks(x)
+        ax.set_xticklabels(TIER_ORDER)
+        ax.set_xlabel("CST-AD tier")
+        ax.grid(axis="y", alpha=0.18, linewidth=0.6)
+    axes[1].legend(frameon=False, fontsize=8, title="Endpoint")
+    save(fig, out_dir / f"{prefix}_tier_performance_by_task_family")
 
 
 def plot_observed_vs_predicted(frame: pd.DataFrame, out_dir: Path, prefix: str) -> None:
@@ -201,11 +353,16 @@ def summarize_for_plot(frame: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def save(fig: plt.Figure, stem: Path) -> None:
-    fig.tight_layout()
+def save(fig: plt.Figure, stem: Path, *, tight: bool = True) -> None:
+    if tight:
+        fig.tight_layout()
     fig.savefig(stem.with_suffix(".png"), bbox_inches="tight")
     fig.savefig(stem.with_suffix(".svg"), bbox_inches="tight")
     plt.close(fig)
+
+
+def sanitize(value: str) -> str:
+    return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in str(value)).strip("_").lower()
 
 
 if __name__ == "__main__":

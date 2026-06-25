@@ -14,6 +14,7 @@
   - 输出矩阵：`outputs/experiments/v1_2_14_cst_ad_initial`。
   - 输出图：`outputs/figures/cst_ad_20260625`。
   - 采用既有 AD audit 阈值：chemical Tanimoto `0.5`、taxonomy similarity `0.8`；ensemble SD 高不确定阈值为 P90。
+- 图表修正：应用域主图应按 `task_family` 分面，不应把 ECx、LOEC、NOEC 全部混在一张 chemical-species space 图中。当前 `scripts/plot_cst_ad.py` 已输出 `cst_ad_chemical_species_space_by_task_family.*`，以及 ECx/LOEC/NOEC 三张单独图。
 - 初步结果：AD-A 覆盖 972/2594=37.5%，MAE=0.8227；AD-B 覆盖 44.3%，MAE=0.9668；AD-C 覆盖 16.8%，MAE=1.0671；AD-D 覆盖 1.5%，MAE=0.8334。整体上 AD-A 误差更低，但仍存在少数高误差域内样本，后续需要结合 endpoint、censored/data-quality 和 train-reference 组合覆盖解释。
 - 当前限制：本地 `outputs/derived/modeling_dataset_v2_0_0_rebuild.sqlite` 无 `split_assignments` 表，因此本地未补全 `cst_train_n_*` train-reference 组合计数；完整 Task AD 计数需在远端含 split assignments 的派生库上运行同一脚本并传入 `--db/--source-table/--split-name`。
 

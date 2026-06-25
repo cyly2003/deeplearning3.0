@@ -134,9 +134,10 @@ CST-AD 是 Chemical-Species-Task Applicability Domain 的缩写，用于当前�
 - x：`cst_chemical_score`
 - y：`cst_species_score`
 - color：`abs_error`
+- facet：`task_family`，即 ECx、LOEC、NOEC 分开绘制
 - 辅助线：`cst_chemical_threshold` 与 `cst_species_threshold`
 
-科研解释：如果高误差点集中在左下角，说明传统化学 AD 与物种 taxonomy AD 能共同解释模型外推风险。
+科研解释：ECx、LOEC 和 NOEC 的观测机制、数据噪声和风险含义不同，应作为主图分面展示。如果高误差点在某一 endpoint family 内集中于低化学相似度或低物种相似度区域，说明传统化学 AD 与物种 taxonomy AD 能共同解释该终点类型的外推风险。总体混合图只能作为附图或方法示意，不应作为主要结论图。
 
 ### 图 2：AD tier 性能分层图
 
@@ -215,6 +216,11 @@ E:\TOOLS\anaconda\python.exe scripts\plot_cst_ad.py `
 - `cst_ad_tier_performance.png/.svg`
 - `cst_ad_observed_vs_predicted.png/.svg`
 - `cst_ad_uncertainty_error.png/.svg`
+- `cst_ad_chemical_species_space_by_task_family.png/.svg`
+- `cst_ad_chemical_species_space_ecx.png/.svg`
+- `cst_ad_chemical_species_space_loec.png/.svg`
+- `cst_ad_chemical_species_space_noec.png/.svg`
+- `cst_ad_tier_performance_by_task_family.png/.svg`
 
 如果暂时不想读取 SQLite，或本地 SQLite 不含 `split_assignments`，可省略 `--db/--source-table/--split-name`。此时脚本仍会生成 Chemical AD、Species AD、ensemble uncertainty 和基础 `ad_species_task_family_seen_train` 分级，但不会补充 `cst_train_n_*` 组合计数。
 
