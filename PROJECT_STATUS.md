@@ -1,6 +1,42 @@
 # Project Status
 
-更新时间：2026-06-25 18:20 (+08:00)
+更新时间：2026-06-26 03:25 (+08:00)
+
+## 2026-06-26 v1.2.15 随机 8:2 vs 随机 5-fold 划分策略试跑完成
+
+- 目标：在模型与训练策略不变的前提下，只改变目标土壤域划分策略，比较随机 8:2 holdout 与随机 5-fold CV 对当前 f100 transfer anchor 指标估计的影响。
+- 策略固定项：
+  - source table：`aggregated_task_records_aquatic_soil_ptox_qc`。
+  - 迁移结构：水相 pTox `train` + 土壤 pTox `finetune/test`。
+  - anchor：`source_weighting=tanimoto_to_finetune alpha=1.0`、authority CE bin loss weight `0.025`、censored loss weight `0.01`、`finetune_validation_fraction=0.2`。
+  - 单 seed：`seed=42`；这次是 split-policy pilot，不是多 seed 稳定性实验。
+- 新增脚本：
+  - `scripts/run_v1_2_15_random_split_policy_remote.sh`：从 `SoilPtoxQC2_B_random_8_2` 和 `SoilPtoxQC2_E_random_5fold_fold1-5` 派生对应 aquatic-to-soil adaptation split，并运行同一 anchor 策略。
+  - `scripts/summarize_split_policy_pilot.py`：从正式 run 的 `predictions.csv` 重新计算 test focus 指标，输出 holdout/fold 与 policy 合并摘要。
+- 远端正式输出：
+  - 根目录：`outputs/experiments/v1_2_15_random_split_policy_formal_remote`。
+  - 汇总目录：`outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary`。
+  - 运行时间表：`outputs/logs/run_v1_2_15_random_split_policy_times.csv`。
+  - 注意：早期入口验证误写入 `outputs/experiments/v1_2_15_random_split_policy_remote`，其预训练仅 1 epoch，不作为正式结果；正式结果只看 `*_formal_remote`。
+- Split 构建核验：
+  - `M_v2_aquatic_to_soil_ptox_adapt_B_random_8_2_f100`：train aquatic 281435，finetune soil 12816，test soil 3204。
+  - 5 个 `M_v2_aquatic_to_soil_ptox_adapt_E_random_5fold_fold*_f100`：每折 train aquatic 281435，finetune soil 12816，test soil 3204。
+- 正式 run 完整性：
+  - 6 个训练均 `exit_code=0`，`required_files_present=True`。
+  - `aquatic_eval_rows=0`，说明 test/finetune_validation 评估中没有水相样本混入。
+  - 每个正式 run 均保留 `tanimoto_to_finetune alpha=1.0`、CE bin 与 censored loss 设置。
+- test focus 合并结果（ECx/LOEC/NOEC soil）：
+  - 随机 8:2 holdout：n=3165，MAE=0.6449，RMSE=0.9207，R2=0.7493，Huber=0.3261。
+  - 随机 5-fold 合并：n=15630，MAE=0.6422，RMSE=0.9149，R2=0.7548，Huber=0.3214。
+  - 5-fold 单折均值 +/- sd：MAE=0.6422 +/- 0.0149，RMSE=0.9148 +/- 0.0144，R2=0.7546 +/- 0.0070。
+- endpoint family：
+  - ECx：5-fold MAE=0.5214/R2=0.8025；8:2 MAE=0.5193/R2=0.7948。
+  - LOEC：5-fold MAE=0.6824/R2=0.7422；8:2 MAE=0.6707/R2=0.7466。
+  - NOEC：5-fold MAE=0.6555/R2=0.7483；8:2 MAE=0.6754/R2=0.7332。
+- 阶段性结论：
+  - 随机 8:2 与随机 5-fold 给出的性能估计非常接近；5-fold 合并略好，但幅度小，不应解释为模型策略本身改进。
+  - 随机划分性能显著高于当前固定 chemical-holdout f100 主线，这是预期现象：随机划分允许相似化合物/物种上下文跨 train/test，更接近插值能力评估；固定 chemical-holdout 仍更适合支撑外推泛化和论文主结果。
+  - 这次试跑可作为“随机划分下的上限/同分布性能参考”，不替代 v1.2.12 固定 chemical-holdout 5-seed ensemble 主结果。
 
 ## 2026-06-25 CST-AD 应用域初版方案与轻量出图
 
