@@ -1,6 +1,334 @@
 # Project Status
 
-更新时间：2026-06-22
+更新时间：2026-06-25 18:20 (+08:00)
+
+## 2026-06-25 CST-AD 应用域初版方案与轻量出图
+
+- 目标：在固定 test 和 v1.2.12 anchor 5-seed ensemble 主线不变的前提下，先构建 Chemical-Species-Task Applicability Domain (CST-AD) 的样本级矩阵和科研图表，不重新训练模型。
+- 新增脚本：
+  - `scripts/build_cst_ad_matrix.py`：读取 ensemble `*_ad_prediction_rows.csv`，生成 `cst_ad_prediction_rows.csv`、`cst_ad_tier_summary.csv`、`cst_ad_family_summary.csv`、`cst_ad_failure_cases.csv` 和 manifest。
+  - `scripts/plot_cst_ad.py`：读取 CST-AD 矩阵，输出 chemical-species 聚合气泡图、AD tier 性能图、真实值-预测值图和 ensemble uncertainty-error 图。
+- 新增文稿：`docs/cst_ad_application_domain_method.md`，记录 taxonomy embedding 取舍、CST-AD 四个维度、阈值、输出矩阵和论文表述草案。
+- 当前轻量输出：
+  - 输入：`outputs/experiments/v1_2_12_f100_5seed_confirmation_remote_summary/anchor_tanimoto_a1_5seed_ensemble_ad_prediction_rows.csv`。
+  - 输出矩阵：`outputs/experiments/v1_2_14_cst_ad_initial`。
+  - 输出图：`outputs/figures/cst_ad_20260625`。
+  - 采用既有 AD audit 阈值：chemical Tanimoto `0.5`、taxonomy similarity `0.8`；ensemble SD 高不确定阈值为 P90。
+- 初步结果：AD-A 覆盖 972/2594=37.5%，MAE=0.8227；AD-B 覆盖 44.3%，MAE=0.9668；AD-C 覆盖 16.8%，MAE=1.0671；AD-D 覆盖 1.5%，MAE=0.8334。整体上 AD-A 误差更低，但仍存在少数高误差域内样本，后续需要结合 endpoint、censored/data-quality 和 train-reference 组合覆盖解释。
+- 当前限制：本地 `outputs/derived/modeling_dataset_v2_0_0_rebuild.sqlite` 无 `split_assignments` 表，因此本地未补全 `cst_train_n_*` train-reference 组合计数；完整 Task AD 计数需在远端含 split assignments 的派生库上运行同一脚本并传入 `--db/--source-table/--split-name`。
+
+## 2026-06-24 v1.2.13 anchor validation-policy 最小验证完成与结论
+
+- 背景问题：当前 `finetune_validation` 是从 `finetune` 内部按 task head 分层随机抽出的 20%，同一 seed 下固定，换 seed 时随训练随机性一起轮换。v1.2.12 已说明 5-seed ensemble 明显优于单模型均值，但这仍是 ensemble 收益；下一步需要直接检验“释放这 20% finetune 样本、全量 finetune 后固定 test 是否更好”。
+- 新增脚本：`scripts/run_v1_2_13_anchor_validation_policy_remote.sh`。
+- 实验范围：
+  - 只跑当前主线 anchor：`source_weighting=tanimoto_to_finetune alpha=1.0`、authority CE bin loss weight 0.025、censored loss weight 0.01、f100 split。
+  - 新增组默认 `FINETUNE_VALIDATION_FRACTION=0.0`，`SEEDS="42 1042 2042 3042 4042"`；与 v1.2.12 既有 `finetune_validation_fraction=0.2` 5-seed anchor ensemble 作固定 test 对照。
+  - 输出根目录：`outputs/experiments/v1_2_13_anchor_validation_policy_remote`；汇总目录：`outputs/experiments/v1_2_13_anchor_validation_policy_remote_summary`。
+  - 汇总包括单模型 summary、AD gate、`seed_mean_ensemble`、以及 `validation_policy_comparison.csv`。
+- 判定规则：
+  - 若 val0 单模型 mean +/- sd 与 5-seed ensemble 同时优于 val0p2 control，说明内部验证留出确实带来数据效率损失，可把 val0 作为 final locked model 策略；但仍需说明没有 finetune early-stopping，模型选择依赖锁参后固定 epoch。
+  - 若 val0 只在 ensemble 或少数 seed 上改善，报告为“可选部署/集成策略”，不作为单模型泛化增强证据。
+  - 若 val0 变差或 AD/species extrapolation 变差，则保留 v1.2.12 anchor 5-seed ensemble 作为稳健主结果，不再继续扩展 finetune-validation policy。
+  - 本阶段继续不启动 DANN/MMD/CORAL，也不再扩展 proxy alpha/source-rule 网格。
+- 远端已启动：
+  - 启动时间：2026-06-24 14:29:36 (+08:00)。
+  - 日志：`outputs/logs/run_v1_2_13_anchor_validation_policy_20260624_142936.log`。
+  - 当前进程：launch shell PID=`1304279`，脚本 PID=`1304282`，首个训练 PID=`1304292`。
+  - 当前首个训练：`transfer_f100_anchor_tanimoto_a1_seed42_cebin_lw0025_censored_w0p01_val0`，split `M_v2_aquatic_to_soil_ptox_adapt_C_f100`。
+  - 启动前远端 `bash -n scripts/run_v1_2_13_anchor_validation_policy_remote.sh` 通过，且无旧训练进程；本地 `git diff --check -- PROJECT_STATUS.md scripts/run_v1_2_13_anchor_validation_policy_remote.sh` 通过。
+- 2026-06-24 15:10 阶段性核验：
+  - `transfer_f100_anchor_tanimoto_a1_seed42_cebin_lw0025_censored_w0p01_val0` 已完成，运行时间 2026-06-24 14:29:36 到 15:05:52，duration=2176s，exit_code=0。
+  - manifest 确认该 run 为全量 finetune policy：`finetune_rows=13526`，`finetune_train_rows=13526`，`finetune_validation_rows=0`，`finetune.early_stopping=False`，finetune 跑满 60 epoch，最终 best_epoch=90。
+  - 固定 test focus（ECx/LOEC/NOEC soil）结果：n=2594，MAE=0.9867，RMSE=1.3181，R2=0.4762。
+  - 对应 control `v1.2.12/v1.2.11 seed42 val0p2`：n=2594，MAE=0.9654，RMSE=1.2784，R2=0.5072；即首个 seed 上 val0 明显弱于保留 20% `finetune_validation` 的 policy。
+  - family 层：val0 的 ECx MAE=0.8316/R2=0.5617，略优于 control 的 ECx MAE=0.8410，但 LOEC（MAE=1.0207/R2=0.4893）和 NOEC（MAE=1.0285/R2=0.4238）均弱于 control（LOEC MAE=0.9843/R2=0.5295，NOEC MAE=1.0071/R2=0.4490）。首个 seed 的负信号主要来自 LOEC/NOEC 退化。
+  - 当前已自动进入第二个训练 `transfer_f100_anchor_tanimoto_a1_seed1042_cebin_lw0025_censored_w0p01_val0`。单 seed 不能终止矩阵，但目前不支持“释放 finetune_validation 会自动提高固定 test 泛化”的假设；需等 5-seed mean/ensemble 和 AD gate 后最终判定。
+- 2026-06-24 15:51 阶段性核验：
+  - `transfer_f100_anchor_tanimoto_a1_seed1042_cebin_lw0025_censored_w0p01_val0` 已完成，运行时间 2026-06-24 15:05:52 到 15:42:29，duration=2197s，exit_code=0；manifest 同样确认 `finetune_train_rows=13526`、`finetune_validation_rows=0`、finetune 跑满 60 epoch、最终 best_epoch=90。
+  - `seed1042 val0` 固定 test focus：n=2594，MAE=1.0147，RMSE=1.3184，R2=0.4760；对应 `seed1042 val0p2 control`：MAE=1.0142，RMSE=1.3336，R2=0.4638。该 seed 上 val0 的 R2/RMSE 略好，但 MAE 基本持平略差。
+  - 当前前 2 个 seed 临时均值：val0 MAE=1.0007，RMSE=1.3182，R2=0.4761；val0p2 control MAE=0.9898，RMSE=1.3060，R2=0.4855。整体仍偏向保留 20% `finetune_validation` 的 control。
+  - 当前已自动进入第三个训练 `transfer_f100_anchor_tanimoto_a1_seed2042_cebin_lw0025_censored_w0p01_val0`，截至 2026-06-24 15:53 已到 pretrain epoch 3。继续等待 5-seed 完整结果、AD audit 与 seed-mean ensemble 后再做最终判定。
+- 2026-06-24 16:30 阶段性核验：
+  - `transfer_f100_anchor_tanimoto_a1_seed2042_cebin_lw0025_censored_w0p01_val0` 已完成，运行时间 2026-06-24 15:42:29 到 16:18:30，duration=2161s，exit_code=0；同样为全量 finetune policy，最终 best_epoch=90。
+  - `seed2042 val0` 固定 test focus：n=2594，MAE=0.9914，RMSE=1.3105，R2=0.4822；对应 `seed2042 val0p2 control`：MAE=1.0008，RMSE=1.3190，R2=0.4755。该 seed 上 val0 略优于 control。
+  - 当前前 3 个 seed 临时均值：val0 MAE=0.9976 +/- 0.0150，RMSE=1.3156，R2=0.4781；val0p2 control MAE=0.9935 +/- 0.0252，RMSE=1.3103，R2=0.4822。总体仍略偏向 control，但差距小于前 2 seed。
+  - family 临时均值：val0 的 ECx MAE 较好（0.8420 vs control 0.8535）但 ECx R2 略弱；LOEC 明显弱于 control（MAE 1.0386 vs 1.0200，R2 0.4850 vs 0.4998）；NOEC 略优于 control（MAE 1.0329 vs 1.0353，R2 0.4276 vs 0.4191）。当前负向差距主要来自 LOEC。
+  - 当前已自动进入第四个训练 `transfer_f100_anchor_tanimoto_a1_seed3042_cebin_lw0025_censored_w0p01_val0`，截至 2026-06-24 16:29 已进入 pretrain 初期。继续等待 5-seed 完整结果与 AD/ensemble 后最终判定。
+- 2026-06-24 17:03 阶段性核验：
+  - `transfer_f100_anchor_tanimoto_a1_seed3042_cebin_lw0025_censored_w0p01_val0` 已完成，运行时间 2026-06-24 16:18:30 到 16:52:24，duration=2034s，exit_code=0。
+  - `seed3042 val0` 固定 test focus：n=2594，MAE=0.9978，RMSE=1.3061，R2=0.4857；对应 `seed3042 val0p2 control`：MAE=1.0034，RMSE=1.3302，R2=0.4665。该 seed 上 val0 明显优于 control。
+  - 当前前 4 个 seed 临时均值：val0 MAE=0.9977 +/- 0.0122，RMSE=1.3132，R2=0.4800；val0p2 control MAE=0.9960 +/- 0.0212，RMSE=1.3153，R2=0.4783。val0 的 MAE 仍略差，但 RMSE/R2 已略优，说明结论从前 3 seed 的偏负转为“混合、不足以单独判胜”。
+  - 当前已自动进入第五个训练 `transfer_f100_anchor_tanimoto_a1_seed4042_cebin_lw0025_censored_w0p01_val0`，截至 2026-06-24 17:02 已进入 pretrain epoch 2。最终判断必须等待 5-seed、AD audit 和 seed-mean ensemble。
+- 2026-06-24 17:37 最终完成：
+  - `transfer_f100_anchor_tanimoto_a1_seed4042_cebin_lw0025_censored_w0p01_val0` 已完成，运行时间 2026-06-24 16:52:24 到 17:29:17，duration=2212s，exit_code=0；5 个 val0 run 的 AD audit 均完成，summary 与 `validation_policy_comparison.csv` 已生成。
+  - 本地已拉回 summary：`outputs/experiments/v1_2_13_anchor_validation_policy_remote_summary`。
+  - val0 5-seed 单模型固定 test mean +/- sd：MAE=0.9926 +/- 0.0155，RMSE=1.3083 +/- 0.0122，R2=0.4839 +/- 0.0096。
+  - 对照 val0p2 5-seed 单模型固定 test mean +/- sd：MAE=0.9883 +/- 0.0168，RMSE=1.3091 +/- 0.0204，R2=0.4875 +/- 0.0158。
+  - val0 5-seed ensemble 固定 test：n=2594，MAE=0.9363，RMSE=1.2365，R2=0.5390；val0p2 control 5-seed ensemble：n=2594，MAE=0.9277，RMSE=1.2368，R2=0.5388。
+  - AD gate（val0 ensemble）：overall_in_domain 覆盖 2371/2594=91.4%，MAE=0.9300，RMSE=1.2349，R2=0.5414；species_extrapolation_only n=223，MAE=1.0029，RMSE=1.2532，R2=0.0860。
+  - endpoint-family（val0 ensemble）：ECx MAE=0.8049/R2=0.6148，LOEC MAE=0.9705/R2=0.5453，NOEC MAE=0.9665/R2=0.4983。
+  - 最终判定：释放 `finetune_validation` 的 20% 样本进入训练后，R2/RMSE 与 val0p2 ensemble 几乎持平，但 MAE 与 Huber loss 略差；单模型均值也没有优于 val0p2。因此不把 val0 作为主模型策略。保留 v1.2.12 anchor 5-seed ensemble 作为当前稳健主结果；val0 可作为“全量微调/无 early-stopping”的敏感性检查，不继续扩展 validation-policy 矩阵。
+
+## 2026-06-24 v1.2.12 f100 5-seed confirmation 完成与结论
+
+- 目标：不扩大新方法矩阵，只把 v1.2.11 的 3-seed 结果扩展到 5 seed，验证 ensemble 收益和 AD 分层结论是否稳定。继续不启用 DANN/MMD/CORAL。
+- 新增脚本：`scripts/run_v1_2_12_f100_5seed_confirmation_remote.sh`。
+  - 默认只补 `EXTENSION_SEEDS="3042 4042"`。
+  - 复用 `scripts/run_v1_2_11_f100_seed_stability_remote.sh` 跑新增 seed 的 anchor、`tanimoto_proxy alpha=0.5`、`proxy_distance alpha=0.5`。
+  - 完成后调用 `scripts/summarize_seed_ensembles.py`，对 `ALL_SEEDS="42 1042 2042 3042 4042"` 生成 5-seed ensemble summary。
+  - 5-seed ensemble 输出目录：`outputs/experiments/v1_2_12_f100_5seed_confirmation_remote_summary`。
+- 本地/远端启动前检查：
+  - 本地 `E:\TOOLS\anaconda\python.exe -m py_compile scripts\summarize_seed_ensembles.py` 通过。
+  - 本地 `git diff --check` 通过。
+  - 远端 `bash -n scripts/run_v1_2_12_f100_5seed_confirmation_remote.sh` 通过。
+  - 远端 `/opt/anaconda3/bin/python -m py_compile scripts/summarize_seed_ensembles.py` 通过。
+  - 启动前远端无旧训练进程。
+- 远端已启动：
+  - 启动时间：2026-06-24 10:15:21 (+08:00)。
+  - wrapper PID=`90434`；当前子脚本 PID=`90444`；当前训练 PID=`90451`。
+  - 日志：`outputs/logs/run_v1_2_12_f100_5seed_confirmation_20260624_101407.log`。
+  - 当前首个训练：`transfer_f100_anchor_tanimoto_a1_seed3042_cebin_lw0025_censored_w0p01`。
+- 2026-06-24 10:55 阶段性核验：
+  - `transfer_f100_anchor_tanimoto_a1_seed3042_cebin_lw0025_censored_w0p01` 已完成，运行时间 2026-06-24 10:15:21 到 10:50:43，duration=2122s，exit_code=0。
+  - 该 run 预训练在 epoch 28 早停，finetune 在 epoch 58 早停，最终 best epoch=76。
+  - 该 run 全局 `finetune_validation`：n=2703，MAE=0.6309，RMSE=0.9074，R2=0.7645；固定 test：n=2730，MAE=0.9907，RMSE=1.3183，R2=0.4804。
+  - 解释：新增 seed3042 的 anchor test 表现与 v1.2.11 的 3-seed anchor 单模型均值（MAE=0.9935，R2=0.4822）一致，目前没有推翻 3-seed 稳定性结论。
+  - `transfer_f100_tanimoto_proxy_a0p5_seed3042_cebin_lw0025_censored_w0p01` 已完成，运行时间 2026-06-24 10:50:43 到 11:22:08，duration=1885s，exit_code=0；预训练在 epoch 22 早停，finetune 在 epoch 59 早停，最终 best epoch=71。
+  - 该 run 全局 `finetune_validation`：n=2703，MAE=0.6102，RMSE=0.8878，R2=0.7746；固定 test：n=2730，MAE=0.9611，RMSE=1.2681，R2=0.5192。
+  - 同 seed 初步比较：`tanimoto_proxy alpha=0.5 seed3042` 明显优于 `anchor seed3042`（test MAE 低 0.0296，R2 高 0.0389），增强了 secondary candidate 信号；但最终仍需 5-seed ensemble 与 AD gate 确认其收益是否主要来自 in-domain/seen 层。
+  - `transfer_f100_anchor_tanimoto_a1_seed4042_cebin_lw0025_censored_w0p01` 已完成，运行时间 2026-06-24 11:22:08 到 11:50:59，duration=1731s，exit_code=0；预训练在 epoch 20 早停，finetune 跑满 60 epoch，最终 best epoch=74。
+  - 该 run 全局 `finetune_validation`：n=2703，MAE=0.5972，RMSE=0.8829，R2=0.7742；固定 test：n=2730，MAE=0.9997，RMSE=1.3227，R2=0.4769。
+  - 初步解释：新增 anchor seed3042/4042 的固定 test 都贴近 v1.2.11 的 anchor 单模型均值（MAE=0.9935，R2=0.4822），支持 anchor 单模型稳定区间大约在 MAE≈0.99、R2≈0.48，而不是 seed42 的单次强结果。
+  - `transfer_f100_tanimoto_proxy_a0p5_seed4042_cebin_lw0025_censored_w0p01` 已完成，运行时间 2026-06-24 11:50:59 到 12:20:27，duration=1768s，exit_code=0；预训练在 epoch 20 早停，finetune 跑满 60 epoch，最终 best epoch=74。
+  - 该 run 全局 `finetune_validation`：n=2703，MAE=0.5959，RMSE=0.8667，R2=0.7824；固定 test：n=2730，MAE=1.0319，RMSE=1.3493，R2=0.4557。
+  - 同 seed 初步比较：`tanimoto_proxy alpha=0.5 seed4042` 的 `finetune_validation` 略好于 anchor，但固定 test 明显弱于 anchor seed4042（test MAE 高 0.0322，R2 低 0.0212），说明 proxy 的单模型收益仍存在 seed 依赖，不能仅凭 seed3042 判定胜出。
+  - 当前 5-seed 单模型 test 暂定均值（anchor/tanimoto_proxy 已完成，proxydist 新增 seed 待跑）：
+    - anchor：MAE=0.9883 +/- 0.0168，RMSE=1.3091 +/- 0.0204，R2=0.4875 +/- 0.0158。
+    - `tanimoto_proxy alpha=0.5`：MAE=0.9878 +/- 0.0294，RMSE=1.3035 +/- 0.0323，R2=0.4917 +/- 0.0253。
+  - 临时解释：5-seed 单模型层面二者几乎打平，proxy 的均值只略优但方差更大；仍不应宣称明确主胜出。最终判断需等 seed-mean ensemble 与 AD gate，尤其看收益是否集中在 in-domain/species-task-family-seen。
+  - 4 个新增 anchor/tanimoto_proxy run 的 AD audit 已全部完成，均 exit_code=0：
+    - `anchor seed3042`：2026-06-24 12:20:27 到 12:22:01，duration=94s。
+    - `tanimoto_proxy seed3042`：2026-06-24 12:22:01 到 12:23:35，duration=94s。
+    - `anchor seed4042`：2026-06-24 12:23:35 到 12:25:07，duration=92s。
+    - `tanimoto_proxy seed4042`：2026-06-24 12:25:07 到 12:26:41，duration=94s。
+  - v1.2.12 已进入第二段 `proxy_distance alpha=0.5` 扩展；由于 anchor seed3042 已存在，脚本跳过 anchor 并启动 `transfer_f100_proxydist_a0p5_seed3042_cebin_lw0025_censored_w0p01`。
+  - `transfer_f100_proxydist_a0p5_seed3042_cebin_lw0025_censored_w0p01` 已完成，运行时间 2026-06-24 12:27:59 到 13:03:52，duration=2153s，exit_code=0；预训练在 epoch 28 早停，finetune 跑满 60 epoch，最终 best epoch=80。
+  - 该 run 全局 `finetune_validation`：n=2703，MAE=0.6402，RMSE=0.9280，R2=0.7537；固定 test：n=2730，MAE=1.0278，RMSE=1.3393，R2=0.4637。
+  - 当前 proxydist 已完成 4 个 seed（42/1042/2042/3042）的 test 暂定均值：MAE=0.9961 +/- 0.0213，RMSE=1.3114 +/- 0.0206，R2=0.4857 +/- 0.0163。新增 seed3042 明显弱于 proxydist 前 3 个 seed，整体上不支持其作为 overall 主模型。
+  - 当前正在运行 `transfer_f100_proxydist_a0p5_seed4042_cebin_lw0025_censored_w0p01`，截至 2026-06-24 13:29 已进入 finetune epoch 30。5-seed summary 目录尚未产出文件，需等待 seed4042 训练、proxydist 新增 audit 与最终 summary 完成。
+- 2026-06-24 13:37 最终完成：
+  - `transfer_f100_proxydist_a0p5_seed4042_cebin_lw0025_censored_w0p01` 已完成，运行时间 2026-06-24 13:03:52 到 13:32:33，duration=1721s，exit_code=0；最终 best epoch=79。
+  - 该 run 固定 test：n=2730，MAE=1.0140，RMSE=1.3266，R2=0.4738。
+  - proxydist seed3042/4042 的 AD audit 均完成，duration=93s，exit_code=0。
+  - v1.2.12 全部新增训练、AD audit 和 5-seed ensemble summary 已完成；最终日志：`outputs/logs/run_v1_2_12_f100_5seed_confirmation_20260624_101407.log`。
+  - 本地已拉回 summary：`outputs/experiments/v1_2_12_f100_5seed_confirmation_remote_summary`。
+- 5-seed 单模型固定 test 均值（mean +/- sd）：
+  - anchor `tanimoto_to_finetune alpha=1.0`：MAE=0.9883 +/- 0.0168，RMSE=1.3091 +/- 0.0204，R2=0.4875 +/- 0.0158。
+  - `tanimoto_proxy_to_finetune alpha=0.5`：MAE=0.9878 +/- 0.0294，RMSE=1.3035 +/- 0.0323，R2=0.4917 +/- 0.0253。
+  - `proxy_distance_to_finetune alpha=0.5`：MAE=0.9997 +/- 0.0201，RMSE=1.3144 +/- 0.0191，R2=0.4834 +/- 0.0151。
+- 5-seed ensemble 固定 test：
+  - anchor ensemble：n=2594，MAE=0.9277，RMSE=1.2368，R2=0.5388。
+  - `tanimoto_proxy alpha=0.5` ensemble：n=2594，MAE=0.9345，RMSE=1.2388，R2=0.5373。
+  - `proxy_distance alpha=0.5` ensemble：n=2594，MAE=0.9427，RMSE=1.2434，R2=0.5338。
+- AD gate 结论：
+  - anchor ensemble 在 all-test、overall-in-domain MAE、species-task-family-seen、species-extrapolation-only 上整体最稳；species-extrapolation-only 为 MAE=0.9854，RMSE=1.2268，R2=0.5312。
+  - `tanimoto_proxy alpha=0.5` 仅在 overall-in-domain R2 和 species-task-family-unseen 层略有优势，但 all-test 与 species-extrapolation-only 均不如 anchor。
+  - `proxy_distance alpha=0.5` 不再支持作为 species extrapolation 主候选；5-seed ensemble 下它的 species-extrapolation-only MAE=1.0156，弱于 anchor。
+- endpoint-family 结论：
+  - anchor ensemble 明显最优于 ECx：MAE=0.7918，RMSE=1.0487，R2=0.6295。
+  - `tanimoto_proxy alpha=0.5` 对 NOEC 更友好：MAE=0.9462，RMSE=1.2678，R2=0.5013；LOEC 的 R2/RMSE 略优但 MAE 略弱。
+  - 因此 proxy 的价值更像 endpoint-family 诊断，不是 overall 主胜出。
+- 最终判定：
+  - 当前主线锁定为 f100 censored anchor；若允许 ensemble，报告 anchor 5-seed ensemble 作为稳健性增强后的最佳结果。
+  - 单模型结论仍需报告 5-seed mean +/- sd，不能把 ensemble 性能等同于单模型性能。
+  - 停止 proxy alpha/source-rule 扩展；`tanimoto_proxy alpha=0.5` 只作为 secondary endpoint/in-domain 诊断，`proxy_distance alpha=0.5` 不作为主模型。
+  - 不启动 DANN/MMD/CORAL；下一阶段优先做 anchor validation-policy/final-model 检验，而不是新增迁移机制。
+
+## 2026-06-24 v1.2.10 proxy alpha 敏感性完成与 v1.2.11 seed 稳定性启动
+
+- 背景问题：当前 `finetune_validation` 是从 `finetune` 内部按 task head 分层随机抽出的 20%，由固定 `project.seed=42` 控制；同一数据、同一 split、同一 seed 下是固定样本集。它用于微调阶段 validation loss、学习率调度和 early stopping，因此只能作为开发集/模型选择信号，最终泛化仍以独立 `test` 和 AD gate 为准。
+- 最小代码补充：
+  - `qsar_tl/training/train.py` 新增 `--seed` 覆盖参数；默认仍读取 `project.seed`，所以既有脚本默认行为不变。
+  - 新增 `scripts/run_v1_2_11_f100_seed_stability_remote.sh`，用于 f100 anchor 与可配置 challenger 的多 seed 稳定性验证，自动输出 summary 与 AD gate。
+  - 本地验证：`E:\TOOLS\anaconda\python.exe -m py_compile qsar_tl\training\train.py` 通过；`E:\TOOLS\anaconda\python.exe -m pytest tests\test_deep_experiment_cache.py -q` 为 `34 passed`；`git diff --check` 通过。远端 `train.py` 编译、`--help` 检查和 `bash -n scripts/run_v1_2_11_f100_seed_stability_remote.sh` 通过。
+- v1.2.10 f100 proxy alpha 敏感性已完成：
+  - 远端时间：2026-06-23 21:46:23 到 2026-06-24 00:18:11 (+08:00)。
+  - 输出根目录：`outputs/experiments/v1_2_10_f100_proxy_alpha_remote`；汇总目录：`outputs/experiments/v1_2_10_f100_proxy_alpha_remote_summary`。
+  - 4 个训练 + 4 个 AD audit 均 `exit_code=0`。
+  - test 指标：
+    - `transfer_f100_proxydist_a0p25_cebin_lw0025_censored_w0p01`：n=2,594，MAE=0.9930，RMSE=1.3133，R2=0.4800。
+    - `transfer_f100_tanimoto_proxy_a0p25_cebin_lw0025_censored_w0p01`：n=2,594，MAE=1.0060，RMSE=1.3237，R2=0.4717。
+    - `transfer_f100_proxydist_a0p75_cebin_lw0025_censored_w0p01`：n=2,594，MAE=1.0083，RMSE=1.3273，R2=0.4688。
+    - `transfer_f100_tanimoto_proxy_a0p75_cebin_lw0025_censored_w0p01`：n=2,594，MAE=0.9934，RMSE=1.3158，R2=0.4780。
+  - family 层诊断：a0.75 pure proxy 的 ECx R2=0.5841 但 NOEC R2=0.4052，说明更强 proxy 权重仍偏移 endpoint-family 平衡；a0.75 tanimoto+proxy 的 LOEC 相对较好（MAE=1.0224/R2=0.4999），但 ECx/NOEC 不足，总体 test 仍弱。
+  - AD gate 诊断：
+    - a0.25 pure proxy：species-extrapolation-only n=223，MAE=1.0620，R2=0.4411；species-task-family-seen n=1,121，MAE=0.9215，R2=0.5543。
+    - a0.75 tanimoto+proxy：overall in-domain n=2,371，MAE=0.9828，R2=0.4844；species-extrapolation-only n=223，MAE=1.1058，R2=0.4044；species-task-family-seen n=1,121，MAE=0.9535，R2=0.5360。
+  - 结论：v1.2.10 的 alpha=0.25/0.75 均弱于 v1.2.8 f100 censored anchor（MAE=0.9692/R2=0.5072），也弱于 v1.2.9 alpha=0.5 的两个 f100 proxy 候选。因此不继续扩展 proxy alpha 网格，也不启动 DANN/MMD/CORAL。
+- v1.2.11 f100 seed 稳定性已完成：
+  - 运行时间：2026-06-24 00:20:35 到 2026-06-24 05:41:48 (+08:00)。
+  - 日志：`outputs/logs/run_v1_2_11_f100_seed_stability_matrix_20260624_002035.log`。
+  - 输出根目录：`outputs/experiments/v1_2_11_f100_seed_stability_remote`；汇总目录：`outputs/experiments/v1_2_11_f100_seed_stability_remote_summary`。
+  - 完成范围：`SEEDS="42 1042 2042"`；f100 anchor `tanimoto_to_finetune alpha=1.0`、`tanimoto_proxy_to_finetune alpha=0.5`、`proxy_distance_to_finetune alpha=0.5`，共 9 个训练 + 9 个 AD audit，均 `exit_code=0`。
+  - 单模型 test 均值（mean +/- sd）：
+    - anchor `tanimoto_to_finetune alpha=1.0`：MAE=0.9935 +/- 0.0252，RMSE=1.3103 +/- 0.0286，R2=0.4822 +/- 0.0225。
+    - `tanimoto_proxy_to_finetune alpha=0.5`：MAE=0.9915 +/- 0.0188，RMSE=1.3093 +/- 0.0193，R2=0.4831 +/- 0.0152。
+    - `proxy_distance_to_finetune alpha=0.5`：MAE=0.9979 +/- 0.0023，RMSE=1.3141 +/- 0.0129，R2=0.4793 +/- 0.0103。
+  - 单模型结论：seed=42 的 anchor 强结果（MAE=0.9654/R2=0.5072）不是跨 seed 完全稳定的固定结论；改 seed 后 anchor 会退到 MAE=1.0142 或 1.0008。`tanimoto_proxy alpha=0.5` 单模型均值只比 anchor 小幅好 0.0020 log units，R2 只高 0.0009，科学意义很小，不能作为明确优胜证据。`proxy_distance alpha=0.5` 方差最小，但均值弱于 anchor 和 tanimoto proxy。
+  - AD gate 均值诊断：
+    - anchor：all test MAE=0.9935/R2=0.4822；overall in-domain MAE=0.9857/R2=0.4865；species-task-family seen MAE=0.9187/R2=0.5562；species-extrapolation-only MAE=1.0766/R2=0.4317。
+    - `tanimoto_proxy alpha=0.5`：all test MAE=0.9915/R2=0.4831；overall in-domain MAE=0.9813/R2=0.4891；species-task-family seen MAE=0.9154/R2=0.5624；species-extrapolation-only MAE=1.0992/R2=0.4138。
+    - `proxy_distance alpha=0.5`：all test MAE=0.9979/R2=0.4793；overall in-domain MAE=0.9899/R2=0.4826；species-task-family seen MAE=0.9174/R2=0.5610；species-extrapolation-only MAE=1.0834/R2=0.4404。
+  - AD 解释：`tanimoto_proxy alpha=0.5` 主要改善 in-domain 与 species-task-family seen 场景，但 species extrapolation 变差，不能作为提高跨物种生态风险外推能力的证据；`proxy_distance alpha=0.5` 在 species-extrapolation R2 上略高，但 MAE 并未优于 anchor，仍不是通用优胜。
+  - 已完成轻量 ensemble 检验：用每组 3 个 seed 的 test 逐行平均预测，不重新训练。输出：`seed_mean_ensemble_focus_summary.csv`、`seed_mean_ensemble_family_summary.csv`、`seed_mean_ensemble_ad_gate_summary.csv`。
+  - 可复现脚本：新增 `scripts/summarize_seed_ensembles.py`，显式传入 `--group output_name=run_a,run_b,run_c`，读取 `audits/*/ad_prediction_rows.csv`，先校验同一 split 的测试行 key 完全一致，再输出 focus、family 与 AD gate summary；`--write-prediction-rows` 可同时保存 ensemble 后的 AD prediction rows。
+  - 脚本验证：本地 `E:\TOOLS\anaconda\python.exe -m pytest tests\test_summarize_seed_ensembles.py tests\test_summarize_deep_runs.py tests\test_deep_experiment_cache.py -q` 为 `38 passed`（仅保留既有本地 Torch/NumPy warning）；远端 `/opt/anaconda3/bin/python -m pytest tests/test_summarize_seed_ensembles.py -q` 为 `2 passed`；远端真实 v1.2.11 audit 目录复跑脚本成功，并已拉回 summary。
+  - seed-mean ensemble test：
+    - anchor ensemble：MAE=0.9408，RMSE=1.2473，R2=0.5310。
+    - `tanimoto_proxy alpha=0.5` ensemble：MAE=0.9377，RMSE=1.2479，R2=0.5305。
+    - `proxy_distance alpha=0.5` ensemble：MAE=0.9438，RMSE=1.2517，R2=0.5276。
+  - ensemble 解释：跨 seed 平均预测确实显著优于任何单 seed 均值，说明随机初始化/`finetune_validation` 抽样带来的误差方向可被模型平均抵消；但这是 ensemble 收益，不等于单模型最终表现自动提高。若论文或后续报告允许 ensemble，可作为稳健性增强方案；若坚持单模型部署，则仍应报告跨 seed mean +/- sd。
+  - 当前决策：不扩展 proxy alpha，不启动 DANN/MMD/CORAL。主线仍保留 f100 censored anchor；`tanimoto_proxy alpha=0.5` 可作为 in-domain 诊断/secondary candidate，`proxy_distance alpha=0.5` 可作为稳定性和 species extrapolation 诊断，不作为主优胜模型。
+
+## 2026-06-23 v1.2.8 censored loss 递进矩阵
+
+- 目标：按递进式计划进入后续阶段 A/B；优先验证 censored loss 与 AD gate，不启用 DANN/MMD/CORAL。
+- 代码范围：
+  - `qsar_tl/training/censored_loss.py`：`censored_hinge_loss` 支持 string/tensor direction，适配 batch loss。
+  - `qsar_tl/training/deep_train.py` 与 `qsar_tl/training/deep_experiment.py`：新增默认关闭的 `training.censored_loss`，精确样本仍走 Huber；删失样本不参与 Huber，只按同 task head 的预测值走 one-sided hinge。
+  - `qsar_tl/training/train.py`：新增 CLI `--censored-loss`、`--censored-loss-weight`、`--censored-loss-margin`。
+  - `scripts/summarize_ad_gate.py`：读取 AD prediction rows，输出 all / in-domain / not species extrapolation / species-task-family seen 等 confidence tier 指标。
+  - `scripts/run_v1_2_8_censored_loss_matrix_remote.sh`：远端 smoke/matrix/summarize 脚本，输出根目录 `outputs/experiments/v1_2_8_censored_loss_matrix_remote`，汇总目录 `outputs/experiments/v1_2_8_censored_loss_matrix_remote_summary`。
+- 本地验证：
+  - `E:\TOOLS\anaconda\python.exe -m pytest tests\test_censored_loss.py tests\test_modeling_shapes.py tests\test_deep_experiment_cache.py tests\test_toxicity_binning.py tests\test_ordinal_binning.py tests\test_summarize_deep_runs.py -q`，`48 passed`。
+  - `git diff --check` 通过。
+- 远端验证：
+  - `bash -n scripts/run_v1_2_8_censored_loss_matrix_remote.sh` 通过。
+  - `/opt/anaconda3/bin/python -m py_compile ... scripts/summarize_ad_gate.py` 通过。
+  - `/opt/anaconda3/bin/python -m pytest tests/test_censored_loss.py tests/test_modeling_shapes.py tests/test_deep_experiment_cache.py tests/test_toxicity_binning.py tests/test_ordinal_binning.py -q`，`46 passed`。
+- 阶段 B AD gate summary 已生成：
+  - 输出：`outputs/experiments/v1_2_8_censored_loss_matrix_remote_summary/v1_2_7_ce_best_ad_gate_summary.csv`。
+  - f100 CE 最佳：all test n=2,594，MAE=0.9768/R2=0.4978；overall in-domain n=2,371，MAE=0.9579/R2=0.5130；species-extrapolation-only n=223，MAE=1.1783/R2=0.3286；species-task-family-seen n=1,121，MAE=0.9018/R2=0.5726。
+  - f20 CE 最佳：all test n=2,557，MAE=1.1478/R2=0.2978；overall in-domain n=2,335，MAE=1.1239/R2=0.3203；species-extrapolation-only n=222，MAE=1.3996/R2=0.0554；species-task-family-seen n=1,093，MAE=1.0154/R2=0.4445。
+- v1.2.8 smoke 已完成：
+  - 运行：`smoke_transfer_f20_cebin_lw005_censored_w003`，split `M_v2_aquatic_to_soil_ptox_adapt_C_f20`，1 epoch pretrain + 1 epoch finetune。
+  - 结束时间：2026-06-23 15:17:29 +08:00。
+  - manifest 中 `censored_loss.candidate_rows=56,345`，`usable_rows=937`，`train_rows=937`，`finetune_rows=0`；跳过原因主要是 `missing_or_unsupported_bound=37,654`、`task_not_trained=7,333`、`unmapped_task=6,205`、`unmatched_split=4,216`。
+  - history 显示 pretrain 阶段 `censored_samples=937`、`mean_censored_loss=0.4605`、`censored_loss_weight=0.03`；finetune/validation 阶段 `censored_samples=0`，确认删失样本没有污染微调验证和 test。
+- 正式 v1.2.8 matrix 已启动：
+  - 启动时间：2026-06-23 15:18:05 +08:00。
+  - PID：`3001550`。
+  - 日志：`outputs/logs/run_v1_2_8_censored_loss_matrix_20260623_151805.log`。
+  - 计时表：`outputs/logs/run_v1_2_8_censored_loss_matrix_times.csv`。
+  - 6 个 run：f20 CE authority-bin + censored weight `0.01/0.03/0.10`，f100 CE authority-bin + censored weight `0.01/0.03/0.10`。
+  - `transfer_f20_cebin_lw005_censored_w0p01` 已完成：duration=1,523s，best_epoch=46，pretrain early-stop epoch=23，finetune early-stop epoch=33；`censored_loss.usable_rows=937`，全部进入 train/pretrain，`finetune_rows=0`。
+  - f20/w0.01 focus test：n=2,557，MAE=1.1835，RMSE=1.5289，R2=0.2782；弱于 v1.2.6 f20 CE 基线 MAE=1.1478/R2=0.2978，因此第一个 censored-loss 点未通过继续扩大门槛。
+  - `transfer_f100_cebin_lw0025_censored_w0p01` 已完成：duration=2,246s，best_epoch=89，pretrain 跑满 30 epoch，finetune 跑满 60 epoch；`censored_loss.usable_rows=984`，全部进入 train/pretrain，`finetune_rows=0`。
+  - f100/w0.01 focus test：n=2,594，MAE=0.9692，RMSE=1.2785，R2=0.5072；优于 v1.2.6 f100 CE 基线 MAE=0.9768/R2=0.4978，初步通过 f100 继续门槛。family test：ECx MAE=0.9144/R2=0.5204，LOEC MAE=0.9826/R2=0.5416，NOEC MAE=0.9827/R2=0.4639。
+  - `transfer_f20_cebin_lw005_censored_w0p03` 已完成：duration=1,855s，best_epoch=73，pretrain 跑满 30 epoch，finetune early-stop epoch=53；`censored_loss.usable_rows=937`，全部进入 train/pretrain，`finetune_rows=0`。
+  - f20/w0.03 focus test：n=2,557，MAE=1.1412，RMSE=1.5117，R2=0.2944；MAE 优于 v1.2.6 f20 CE 基线 1.1478，R2 略低于基线 0.2978 但接近，说明 f20 分支存在权重敏感的正收益。family test：ECx MAE=0.9750/R2=0.4591，LOEC MAE=1.1576/R2=0.3158，NOEC MAE=1.2062/R2=0.1952。
+  - `transfer_f100_cebin_lw0025_censored_w0p03` 已完成：duration=2,229s，best_epoch=89，pretrain/finetune 均跑满；`censored_loss.usable_rows=984`，全部进入 train/pretrain，`finetune_rows=0`。
+  - f100/w0.03 focus test：n=2,594，MAE=0.9837，RMSE=1.2972，R2=0.4927；弱于 f100/w0.01 与 v1.2.6 f100 CE 基线。family test 显示 ECx 明显改善（MAE=0.7858/R2=0.6240），但 LOEC/NOEC 退化（MAE=1.0443/1.0203），提示更强 censored loss 会偏移 endpoint-family 平衡。
+  - `transfer_f20_cebin_lw005_censored_w0p10` 已完成：duration=1,885s，best_epoch=73，pretrain 跑满 30 epoch，finetune early-stop epoch=53；focus test n=2,557，MAE=1.1612，RMSE=1.5356，R2=0.2719，弱于 f20/w0.03（MAE=1.1412/R2=0.2944），因此 f20 的 v1.2.9 默认锚点仍保留 censored weight `0.03`。
+  - `transfer_f100_cebin_lw0025_censored_w0p10` 已完成：duration=2,229s，best_epoch=90，pretrain/finetune 跑满；focus test n=2,594，MAE=1.0007，RMSE=1.3193，R2=0.4752，弱于 f100/w0.01 与 f100/w0.03。
+- v1.2.8 完整结论：
+  - f20 最佳：`transfer_f20_cebin_lw005_censored_w0p03`，test MAE=1.1412、RMSE=1.5117、R2=0.2944；相对 v1.2.6 f20 CE 基线 MAE=1.1478/R2=0.2978，是“MAE 小幅改善、R2 近似持平略低”的可用但不强的改进。
+  - f100 最佳：`transfer_f100_cebin_lw0025_censored_w0p01`，test MAE=0.9692、RMSE=1.2785、R2=0.5072；相对 v1.2.6 f100 CE 基线 MAE=0.9768/R2=0.4978，MAE 与 R2 均改善，是当前最稳的 censored-loss 正向证据。
+  - censored loss 存在明显权重敏感性：f20 的 0.10 退化；f100 的 0.03/0.10 虽提升 ECx family，但 LOEC/NOEC 退化导致总体下降。解释上更像“低权重可作为删失约束正则项”，而不是可大权重替代精确毒性监督。
+  - 最终锚点：v1.2.9 proxy/source-rule 阶段默认使用 f20 `censored_weight=0.03`、toxicity bin CE loss=0.05；f100 `censored_weight=0.01`、toxicity bin CE loss=0.025。
+- v1.2.8 best censored candidates 的化合物+物种 AD gate 已补跑：
+  - 输出：`outputs/experiments/v1_2_8_censored_loss_matrix_remote_summary/censored_best_ad_gate_summary.csv`。
+  - f100/w0.01：all test MAE=0.9692/R2=0.5072；overall in-domain MAE=0.9644/R2=0.5058；species-task-family-seen MAE=0.9047/R2=0.5739；species-extrapolation-only MAE=1.0207/R2=0.5195。相对旧 CE 基线，外推层显著改善，说明低权重 censored loss 对 f100 的收益不是只来自易样本。
+  - f20/w0.03：all test MAE=1.1412/R2=0.2944；overall in-domain MAE=1.1128/R2=0.3163；species-task-family-seen MAE=0.9885/R2=0.4645；species-extrapolation-only MAE=1.4395/R2=0.0588。域内/seen 层略有改善，但物种外推仍是 f20 的主要风险。
+- v1.2.9 proxy/source-rule 阶段已启动：
+  - 训练侧最小扩展：`source_weighting_method` 新增 `proxy_distance_to_finetune` 与 `tanimoto_proxy_to_finetune`；使用 `molecular_numeric` 中 MolWt/TPSA/MolLogP 三个 proxy 维度计算到 soil finetune 的最近距离，权重继续做均值归一化与 min/max clipping。
+  - 汇总侧：`scripts/summarize_deep_runs.py` 的 `audit_summary.csv` 新增 `source_weighting_method`、`source_weighting_alpha`、`source_proxy_distance_mean`，便于比较 proxy/source-rule 矩阵。
+  - 远端脚本：`scripts/run_v1_2_9_proxy_source_rule_remote.sh`，默认 4 个正式候选：f20/f100 × `proxy_distance_to_finetune`/`tanimoto_proxy_to_finetune`，默认锚点 `F20_CENSORED_WEIGHT=0.03`、`F100_CENSORED_WEIGHT=0.01`、`PROXY_ALPHA=0.5`；如果 v1.2.8 的 w0.10 胜出，启动前用环境变量覆盖。
+  - 本地验证：`E:\TOOLS\anaconda\python.exe -m pytest tests/test_deep_experiment_cache.py tests/test_modeling_shapes.py tests/test_censored_loss.py tests/test_ordinal_binning.py -q` 为 `43 passed`；`tests/test_summarize_deep_runs.py -q` 为 `2 passed`；`py_compile` 和 `git diff --check` 通过。
+  - 远端验证：`bash -n scripts/run_v1_2_9_proxy_source_rule_remote.sh` 通过；`/opt/anaconda3/bin/python -m py_compile qsar_tl/training/deep_experiment.py qsar_tl/training/train.py scripts/summarize_deep_runs.py scripts/audit_prediction_application_domain.py` 通过；`/opt/anaconda3/bin/python -m pytest tests/test_deep_experiment_cache.py tests/test_summarize_deep_runs.py -q` 为 `34 passed`。
+  - smoke 已完成：`smoke_transfer_f20_proxydist_a0p5_cebin_lw005_censored_w0p03`，1 epoch pretrain + 1 epoch finetune，duration=534s，best_epoch=2；manifest 确认 `source_weighting_method=proxy_distance_to_finetune`、`source_weighting_alpha=0.5`、`source_proxy_distance_mean=0.2099`。
+  - 正式 matrix 已启动：2026-06-23 19:26:48 +08:00，PID=`3694`，日志 `outputs/logs/run_v1_2_9_proxy_source_rule_matrix_20260623_192648.log`。
+  - 正式任务顺序：`transfer_f20_proxydist_a0p5_cebin_lw005_censored_w0p03`、`transfer_f100_proxydist_a0p5_cebin_lw0025_censored_w0p01`、`transfer_f20_tanimoto_proxy_a0p5_cebin_lw005_censored_w0p03`、`transfer_f100_tanimoto_proxy_a0p5_cebin_lw0025_censored_w0p01`，随后自动跑 4 个 AD audit 并生成 `ad_gate_summary.csv`。
+  - 运行中优化：首个正式任务启动后，已将 `min_proxy_distance` 从逐样本循环改为批量矩阵乘法，结果与直接欧氏最近距离一致；本地 `tests/test_deep_experiment_cache.py -q` 为 `33 passed`，远端同步后同一测试为 `33 passed`。当前首个 f20 proxy-distance 进程已加载旧实现但已顺利进入 epoch；后续 f100/proxy 与 tanimoto+proxy 任务会使用优化后的批量实现。
+- `transfer_f20_proxydist_a0p5_cebin_lw005_censored_w0p03` 已完成：duration=1,562s，best_epoch=62；test n=2,557，MAE=1.1907，RMSE=1.5628，R2=0.2459，弱于 v1.2.8 f20 censored 锚点 MAE=1.1412/R2=0.2944。初步判断：单独用 proxy-distance 替代 Tanimoto 源域权重会损失结构相似度信息，不适合作为 f20 主线。
+- `transfer_f100_proxydist_a0p5_cebin_lw0025_censored_w0p01` 已完成：duration=2,227s，best_epoch=84；test n=2,594，MAE=0.9630，RMSE=1.2829，R2=0.5038。相对 v1.2.8 f100 censored 锚点 MAE=0.9692/R2=0.5072，是“MAE 小幅改善、R2 小幅下降”；family test 中 ECx 明显改善（MAE=0.8439/R2=0.5689），LOEC 基本持平略好（MAE=0.9795/R2=0.5301），NOEC 略退化（MAE=1.0045/R2=0.4460）。说明 pure proxy-distance 对 f100 有可用信号，但仍需看 `tanimoto_proxy_to_finetune` 是否能兼顾结构相似性与 proxy 环境行为相似性。
+- `max_tanimoto_similarity` 已补充重复指纹去重优化：对 source/target fingerprint 先 unique，再将最大 Tanimoto 映射回原 source 行；测试确认重复 source/target 时分数与直接逐行计算一致。本地与远端 `tests/test_deep_experiment_cache.py -q` 均为 `34 passed`。当前 f20 tanimoto+proxy 进程启动早于该同步，仍使用旧实现；后续 f100 tanimoto+proxy 会加载优化后的实现。
+- `transfer_f20_tanimoto_proxy_a0p5_cebin_lw005_censored_w0p03` 已完成：duration=1,869s，best_epoch=61；test n=2,557，MAE=1.1501，RMSE=1.5334，R2=0.2740。相对 f20 pure proxy MAE=1.1907/R2=0.2459 明显恢复，说明加入 Tanimoto 后结构相似度信号有效；但仍弱于 v1.2.8 f20 censored 锚点 MAE=1.1412/R2=0.2944，也未超过旧 CE authority-bin f20 的 MAE=1.1478/R2=0.2978。family test：ECx MAE=0.9922/R2=0.4269，LOEC MAE=1.1759/R2=0.2723，NOEC MAE=1.2019/R2=0.2051；NOEC 比 v1.2.8 f20/w0.03 略好，但 ECx/LOEC 与总 R2 不足。当前结论：f20 不支持继续扩大 proxy 权重，只可作为组合权重优于 pure proxy 的证据。
+- `transfer_f100_tanimoto_proxy_a0p5_cebin_lw0025_censored_w0p01` 已完成：duration=1,968s，best_epoch=84；test n=2,594，MAE=0.9710，RMSE=1.2748，R2=0.5100。相对 v1.2.8 f100 censored 锚点 MAE=0.9692/R2=0.5072，是“R2 小幅提升、MAE 小幅退化”；相对 f100 pure proxy MAE=0.9630/R2=0.5038，是“结构+proxy 组合改善 RMSE/R2，但不改善 MAE”。family test：ECx MAE=0.8777/R2=0.5428，LOEC MAE=0.9618/R2=0.5548，NOEC MAE=1.0249/R2=0.4468；说明组合权重主要改善 LOEC 与总体方差解释，ECx 不如 pure proxy，NOEC 仍有退化。
+- v1.2.9 已完整完成：4 个正式训练候选 + 4 个 AD audit 均 exit_code=0；正式汇总目录 `outputs/experiments/v1_2_9_proxy_source_rule_remote_summary`，包含 `focus_summary.csv`、`family_summary.csv`、`common_task_comparison.csv`、`audit_summary.csv`、`ad_gate_summary.csv`。
+- v1.2.9 AD gate 结论：
+  - f20 两个 proxy 方案均未超过 v1.2.8 f20 censored 锚点，不继续扩大 f20 proxy。`tanimoto_proxy` 比 pure proxy 明显恢复：all test MAE/R2 从 1.1907/0.2459 改为 1.1501/0.2740；species-task-family seen 层 MAE/R2 为 0.9957/0.4619，但 species-extrapolation-only 仍差，MAE=1.4628、R2=-0.0128。
+  - f100 pure proxy：all test MAE=0.9630/R2=0.5038，是 v1.2.9 内 MAE 最好；species-extrapolation-only MAE=0.9884/R2=0.4786，MAE 优于 v1.2.8 f100 censored 锚点的外推层，但总体 R2 和 NOEC 稳定性不足。
+  - f100 tanimoto+proxy：all test MAE=0.9710/R2=0.5100，是 v1.2.9 内 R2/RMSE 最好；overall in-domain MAE=0.9499/R2=0.5257，family_seen_train MAE=0.9316/R2=0.5290，说明结构+proxy 组合更偏向已覆盖域内收益；但 species-extrapolation-only MAE=1.1953/R2=0.3355，明显弱于 pure proxy，提示该组合会牺牲物种外推层。
+  - 阶段判断：proxy/source-rule 对 f100 有真实但不干净的信号；不能直接作为最终主线，也不应进入大矩阵。下一步采用 f100-only alpha 敏感性，确认 pure proxy 与 tanimoto+proxy 的权衡是否可通过更温和/更强 alpha 改善；继续不启用 DANN/MMD/CORAL。
+- v1.2.10 f100 proxy alpha 敏感性已启动：
+  - 脚本：`scripts/run_v1_2_10_f100_proxy_alpha_remote.sh`。
+  - 输出根目录：`outputs/experiments/v1_2_10_f100_proxy_alpha_remote`；汇总目录：`outputs/experiments/v1_2_10_f100_proxy_alpha_remote_summary`。
+  - 远端启动时间：2026-06-23 21:46:23 +08:00；PID=`674041`；日志 `outputs/logs/run_v1_2_10_f100_proxy_alpha_matrix_20260623_214623.log`。
+  - 4 个候选：f100 × `proxy_distance_to_finetune` / `tanimoto_proxy_to_finetune` × alpha `0.25/0.75`；固定 CE authority-bin loss=0.025、censored_weight=0.01、finetune 60 epoch；随后自动跑 4 个 AD audit 与 `ad_gate_summary.csv`。
+
+## 2026-06-22 v1.2.7 censored / ordinal / AD 第一批
+
+- 目标：按新计划先做阶段 1/2/6 的最小代码改动，并启动第一批 10 个小矩阵任务；暂不实现或启用 DANN/MMD/CORAL。
+- 代码范围：
+  - 新增 `qsar_tl/training/ordinal_binning.py`：toxicity-bin head 仍输出 K 类 logits，`ordinal` mode 使用 CDF/EMD 风格 ordinal loss，跨多档错误惩罚更大；`aux_classification` CE 路径保持不变。
+  - 新增 `qsar_tl/training/censored_loss.py` 和 `scripts/audit_censored_records.py`：当前第一批只做 `censored_audit_only`，统计 `> / < / >= / <=` 在 endpoint、unit_family、medium、task_family/task_head 中的规模；hinge loss 方向函数已有测试，但未接入本批训练。
+  - 新增 `scripts/audit_proxy_bins.py`：只做 MolLogP/TPSA/MolWt/logKoc proxy 分层审计，不实现 proxy source weighting。
+  - 扩展 `qsar_tl/evaluation/application_domain.py` 与新增 `scripts/audit_prediction_application_domain.py`：输出化合物 Tanimoto/Williams/proxy-distance 与物种 taxon/seen-train/life-stage/task-family 覆盖审计，生成 `chemical_ad_metrics.csv`、`species_ad_metrics.csv`、`ad_stratified_metrics.csv`、`ad_failure_cases.csv`。
+  - 新增远端脚本 `scripts/run_v1_2_7_censored_ordinal_ad_first_batch_remote.sh`，输出根目录 `outputs/experiments/v1_2_7_censored_ordinal_ad_first_batch_remote`。
+- 本地/远端验证：
+  - 本地：`E:\TOOLS\anaconda\python.exe -m pytest tests\test_ordinal_binning.py tests\test_censored_loss.py tests\test_toxicity_binning.py tests\test_modeling_shapes.py tests\test_deep_experiment_cache.py tests\test_application_domain.py tests\test_summarize_deep_runs.py -q`，`48 passed`。
+  - 远端：`bash -n scripts/run_v1_2_7_censored_ordinal_ad_first_batch_remote.sh` 通过；`/opt/anaconda3/bin/python -m pytest tests/test_ordinal_binning.py tests/test_censored_loss.py tests/test_toxicity_binning.py tests/test_modeling_shapes.py tests/test_application_domain.py -q`，`17 passed`。
+- 第一批 10 个任务：
+  1. `transfer_f20_no_bin_rerun`
+  2. `transfer_f20_bin_ordinal_lw005`
+  3. `transfer_f100_no_bin_rerun`
+  4. `transfer_f100_bin_ordinal_lw0025`
+  5. `soil_fullC_no_bin_anchor`
+  6. `soil_fullC_bin_ordinal_lw005`
+  7. `censored_audit_only`
+  8. `proxy_audit_logp_koc_tpsa_bins`
+  9. `best_transfer_f100_ad_audit`
+  10. `best_transfer_f20_ad_audit`
+- 2026-06-23 最终状态：
+  - 第一批 10 个任务全部完成，最后一次恢复日志为 `outputs/logs/run_v1_2_7_censored_ordinal_ad_first_batch_resume5_20260623_141758.log`；结束时间 `2026-06-23T14:19:51+08:00`。
+  - 汇总目录：`outputs/experiments/v1_2_7_censored_ordinal_ad_first_batch_remote_summary`，包含 `focus_summary.csv`、`best_by_split.csv`、`common_task_summary.csv`、`common_task_comparison.csv`、`family_summary.csv`、`effect_level_summary.csv`、`toxicity_bin_summary.csv`、`audit_summary.csv`。
+  - 远端运行中发现 `best_transfer_f20_ad_audit` 旧孤儿进程与当前恢复进程重复写同一输出目录；已停掉孤儿进程，并将 AD audit 脚本改为只对 query 预测行计算 taxonomy/species context，训练端仅建 reference set。修补后 f20 AD audit 用 89 秒完成。
+  - `censored_audit_only` 完成：全表 1,234,077 行，其中 censored 行 56,699，说明 censored 约束值得进入下一轮受控训练，但本批只审计、未接入训练 loss。
+  - `proxy_audit_logp_koc_tpsa_bins` 完成：记录 299,139 行，summary 285 行；本批只做 MolLogP/TPSA/MolWt/logKoc proxy 分层诊断，未启用 proxy source weighting。
+  - `best_transfer_f100_ad_audit` 完成：focus prediction rows=5,200，test n=2,594；`species_extrapolation` 223 条，`in_domain` 2,371 条。
+  - `best_transfer_f20_ad_audit` 完成：focus prediction rows=3,086，test n=2,557；`species_extrapolation` 222 条，`in_domain` 2,335 条。
+- v1.2.7 ordinal / no-bin 主要 test 指标：
+  - `transfer_f20_no_bin_rerun`：n=2,557，任务头=25，MAE=1.1958，RMSE=1.5555，R2=0.2529。
+  - `transfer_f20_bin_ordinal_lw005`：n=2,557，任务头=25，MAE=1.1717，RMSE=1.5365，R2=0.2711；相对 no-bin 改善 MAE 0.0241、R2 0.0182。
+  - `transfer_f100_no_bin_rerun`：n=2,594，任务头=30，MAE=1.0033，RMSE=1.3166，R2=0.4774。
+  - `transfer_f100_bin_ordinal_lw0025`：n=2,594，任务头=30，MAE=0.9895，RMSE=1.3043，R2=0.4871；相对 no-bin 改善 MAE 0.0138、R2 0.0097。
+  - `soil_fullC_no_bin_anchor`：n=2,266，任务头=17，MAE=1.0409，RMSE=1.3749，R2=0.4241。
+  - `soil_fullC_bin_ordinal_lw005`：n=2,266，任务头=17，MAE=1.0339，RMSE=1.3731，R2=0.4256；相对 no-bin 改善很小。
+- 与 v1.2.6 CE authority-bin 基线对比：
+  - f20：ordinal MAE=1.1717/R2=0.2711，仍弱于 CE authority-bin 最佳 `transfer_f20_source_alpha1_authority_bin_aux_lw005` 的 MAE=1.1478/R2=0.2978。
+  - f100：ordinal MAE=0.9895/R2=0.4871，仍弱于 CE authority-bin 最佳 `transfer_f100_source_alpha1_authority_bin_aux_lw0025` 的 MAE=0.9768/R2=0.4978。
+  - soil fullC：ordinal MAE=1.0339/R2=0.4256，弱于 CE authority-bin `soil_fullC_authority_bin_aux_lw005_core` 的 MAE=1.0036/R2=0.4677。
+  - 当前结论：binning 应保留在训练中，但当前 CDF/EMD 风格 ordinal loss 不应替代普通 CE authority-bin；CE authority-bin 继续作为迁移主线，ordinal 可保留为诊断/备选。
+- AD 审计结论：
+  - v1.2.6 f100 CE 最佳在 test 全部样本 MAE=0.9768/R2=0.4978；in-domain 子集 n=2,371，MAE=0.9579/R2=0.5130；species-extrapolation 子集 n=223，MAE=1.1783/R2=0.3286。
+  - v1.2.6 f20 CE 最佳在 test 全部样本 MAE=1.1478/R2=0.2978；in-domain 子集 n=2,335，MAE=1.1239/R2=0.3203；species-extrapolation 子集 n=222，MAE=1.3996/R2=0.0554。
+  - 物种覆盖是明显风险源：f20 中 `species_task_family_seen_train=True` 子集 MAE=1.0154/R2=0.4445，而 False 子集 MAE=1.2467/R2=0.1825；f100 中 True 子集 MAE=0.9018/R2=0.5726，而 False 子集 MAE=1.0339/R2=0.4357。
+  - 化合物 AD 当前阈值下几乎不构成主要失败来源，主要警告来自物种外推；下一轮不宜只按化学相似度过滤，应把 species/task-family coverage 作为报告分层或 AD gate。
+- 远端启动状态：
+  - 启动时间：2026-06-22 22:24:11 +08:00。
+  - PID：`2112558`。
+  - 日志：`outputs/logs/run_v1_2_7_censored_ordinal_ad_first_batch_20260622_222411.log`。
+  - 计时表：`outputs/logs/run_v1_2_7_censored_ordinal_ad_first_batch_times.csv`。
+  - 首个 run 已开始：`transfer_f20_no_bin_rerun`，split `M_v2_aquatic_to_soil_ptox_adapt_C_f20`。
+- 2026-06-22 约 23:48 +08:00 阶段性结果：
+  - 远端 PID `2112558` 仍在运行；10 个任务中前 3 个训练 run 完成，当前正在跑 `transfer_f100_bin_ordinal_lw0025`。
+  - `transfer_f20_no_bin_rerun`：test soil ECx/NOEC/LOEC focus n=2,557，任务头=25，R2=0.2529，RMSE=1.5555，MAE=1.1958。
+  - `transfer_f20_bin_ordinal_lw005`：test soil ECx/NOEC/LOEC focus n=2,557，任务头=25，R2=0.2711，RMSE=1.5365，MAE=1.1717；相对 no-bin 改善 MAE 约 0.0241、R2 约 0.0182，但仍差于 v1.2.6 CE authority-bin f20 最佳 `MAE=1.1478/R2=0.2978`。
+  - f20 分任务族：ordinal 对 LOEC/NOEC 有小幅改善（LOEC MAE 1.2107 -> 1.1829；NOEC MAE 1.2768 -> 1.2507），ECx MAE 也略降（0.9999 -> 0.9874），但 ECx R2 从 0.4340 降到 0.4245。
+  - `transfer_f100_no_bin_rerun`：test soil ECx/NOEC/LOEC focus n=2,594，任务头=30，R2=0.4774，RMSE=1.3166，MAE=1.0033；弱于 v1.2.6 CE authority-bin f100 最佳 `MAE=0.9768/R2=0.4978`。
+  - 初步判断：截至当前，分箱仍有价值；f20 ordinal 优于 no-bin，但没有超过普通 CE authority-bin。是否保留 ordinal 要等 f100 ordinal 和 soil-only anchor/audit 完成后再定。
 
 ## 2026-06-22 v1.2.6 authority-based toxicity binning 矩阵
 

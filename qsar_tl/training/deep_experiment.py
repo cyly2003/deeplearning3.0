@@ -16,6 +16,7 @@ import numpy as np
 from qsar_tl.evaluation.metrics import regression_metrics
 from qsar_tl.modeling.dataset import AggregatedTaskDataset
 from qsar_tl.modeling.network import DeepModelConfig, EcotoxMultiTaskNetwork, TOXICITY_BIN_LOGITS_KEY
+from qsar_tl.training.censored_loss import censored_direction, censored_hinge_loss
 from qsar_tl.training.baseline import (
     EVAL_SPLIT_PARTS,
     add_duration_nonlinear_features,
@@ -28,6 +29,7 @@ from qsar_tl.training.deep_train import (
     collate_aggregated_task_batch,
     set_torch_seed,
 )
+from qsar_tl.training.ordinal_binning import ordinal_softmax_loss
 from qsar_tl.training.toxicity_binning import (
     ToxicityBinningConfig,
     assign_toxicity_bin,
@@ -335,6 +337,29 @@ class DomainAlignmentConfig:
 
 
 @dataclass(frozen=True)
+class CensoredLossConfig:
+    enabled: bool = False
+    method: str = "hinge"
+    weight: float = 0.0
+    margin: float = 0.0
+    split_parts: tuple[str, ...] = ("train", "finetune")
+    include_ops: tuple[str, ...] = ("<", "<=", ">", ">=")
+
+    def active(self) -> bool:
+        return self.enabled and self.method == "hinge" and self.weight > 0
+
+    def to_manifest(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "method": self.method,
+            "weight": self.weight,
+            "margin": self.margin,
+            "split_parts": list(self.split_parts),
+            "include_ops": list(self.include_ops),
+        }
+
+
+@dataclass(frozen=True)
 class SwaConfig:
     enabled: bool = False
     phase: str = "finetune"
@@ -482,6 +507,9 @@ def run_deep_experiment(
     toxicity_binning_mode: str | None = None,
     toxicity_binning_loss_weight: float | None = None,
     toxicity_binning_scheme: str | None = None,
+    censored_loss_enabled: bool | None = None,
+    censored_loss_weight: float | None = None,
+    censored_loss_margin: float | None = None,
     domain_alignment_method: str | None = None,
     domain_alignment_weight: float | None = None,
     swa_enabled: bool | None = None,
@@ -563,6 +591,12 @@ def run_deep_experiment(
     )
     toxicity_bin_scheme = load_toxicity_bin_scheme(toxicity_binning_cfg.scheme)
     toxicity_bin_count = toxicity_bin_class_count(toxicity_bin_scheme) if toxicity_binning_cfg.enabled else 0
+    censored_loss_cfg = _censored_loss_config(
+        train_cfg,
+        enabled_override=censored_loss_enabled,
+        weight_override=censored_loss_weight,
+        margin_override=censored_loss_margin,
+    )
     domain_alignment_cfg = _domain_alignment_config(
         train_cfg,
         method_override=domain_alignment_method,
@@ -676,11 +710,46 @@ def run_deep_experiment(
         toxicity_binning_config=toxicity_binning_cfg,
         toxicity_bin_scheme=toxicity_bin_scheme,
     )
+    censored_summary = {
+        **censored_loss_cfg.to_manifest(),
+        "candidate_rows": 0,
+        "usable_rows": 0,
+        "train_rows": 0,
+        "finetune_rows": 0,
+        "skipped_rows": {},
+    }
     mark_internal_validation_samples(
         samples,
         indices=finetune_validation_indices,
         split_part="finetune_validation",
     )
+    if censored_loss_cfg.active():
+        censored_samples, censored_summary = build_censored_training_samples(
+            db_path,
+            frame,
+            encoder=encoder,
+            categorical_maps=categorical_maps,
+            adapter_map=adapter_map,
+            numeric_stats=numeric_stats,
+            target_column=target_column,
+            target_scaler=target_scaler,
+            zscore_correction=zscore_correction,
+            ablation=ablation_spec,
+            config=censored_loss_cfg,
+            kept_task_heads=tuple(sorted(set(str(sample.get("task_head")) for sample in samples))),
+            split_parts=tuple(sorted({str(sample.get("split_part")) for sample in samples})),
+        )
+        censored_start = len(samples)
+        samples.extend(censored_samples)
+        for offset, sample in enumerate(censored_samples):
+            idx = censored_start + offset
+            split_part = str(sample.get("split_part", "")).lower()
+            if split_part == "train":
+                actual_train_indices.append(idx)
+                train_indices.append(idx)
+            elif split_part == "finetune":
+                finetune_indices.append(idx)
+                finetune_train_indices.append(idx)
     source_weighting_summary = apply_source_similarity_weights(samples, source_weighting_cfg)
     effect_level_weighting_summary = apply_effect_level_frequency_weights(
         samples,
@@ -746,6 +815,9 @@ def run_deep_experiment(
         seed=seed,
         num_workers=int(train_cfg.get("num_workers", 0)),
         toxicity_bin_loss_weight=toxicity_binning_cfg.loss_weight if toxicity_binning_cfg.active() else 0.0,
+        toxicity_binning_mode=toxicity_binning_cfg.mode,
+        censored_loss_weight=censored_loss_cfg.weight if censored_loss_cfg.active() else 0.0,
+        censored_loss_margin=censored_loss_cfg.margin,
     )
     finetune_config = DeepTrainingConfig(
         epochs=requested_finetune_epochs,
@@ -765,6 +837,9 @@ def run_deep_experiment(
         seed=seed,
         num_workers=train_config.num_workers,
         toxicity_bin_loss_weight=train_config.toxicity_bin_loss_weight,
+        toxicity_binning_mode=train_config.toxicity_binning_mode,
+        censored_loss_weight=train_config.censored_loss_weight,
+        censored_loss_margin=train_config.censored_loss_margin,
     )
 
     set_torch_seed(seed)
@@ -869,6 +944,8 @@ def run_deep_experiment(
             "validation_task_loss": "" if validation_loss is None else validation_loss.get("mean_task_loss", ""),
             "validation_toxicity_bin_loss": "" if validation_loss is None else validation_loss.get("mean_toxicity_bin_loss", ""),
             "validation_toxicity_bin_samples": 0 if validation_loss is None else validation_loss.get("toxicity_bin_samples", 0),
+            "validation_censored_loss": "" if validation_loss is None else validation_loss.get("mean_censored_loss", ""),
+            "validation_censored_samples": 0 if validation_loss is None else validation_loss.get("censored_samples", 0),
             "validation_samples": 0 if validation_loss is None else validation_loss["samples"],
             "monitor_loss": monitor_loss,
             "best_epoch": best_epoch,
@@ -1009,6 +1086,8 @@ def run_deep_experiment(
                 "validation_task_loss": "" if finetune_validation_loss is None else finetune_validation_loss.get("mean_task_loss", ""),
                 "validation_toxicity_bin_loss": "" if finetune_validation_loss is None else finetune_validation_loss.get("mean_toxicity_bin_loss", ""),
                 "validation_toxicity_bin_samples": 0 if finetune_validation_loss is None else finetune_validation_loss.get("toxicity_bin_samples", 0),
+                "validation_censored_loss": "" if finetune_validation_loss is None else finetune_validation_loss.get("mean_censored_loss", ""),
+                "validation_censored_samples": 0 if finetune_validation_loss is None else finetune_validation_loss.get("censored_samples", 0),
                 "validation_samples": 0 if finetune_validation_loss is None else finetune_validation_loss["samples"],
                 "monitor_loss": monitor_loss,
                 "best_epoch": finetune_best_epoch,
@@ -1199,6 +1278,7 @@ def run_deep_experiment(
         "source_weighting": source_weighting_summary,
         "effect_level_weighting": effect_level_weighting_summary,
         "toxicity_binning": toxicity_binning_summary,
+        "censored_loss": censored_summary,
         "domain_alignment": domain_alignment_summary,
         "swa": {
             **swa_cfg.to_manifest(),
@@ -1753,6 +1833,253 @@ def build_deep_samples(
     return samples
 
 
+def build_censored_training_samples(
+    db_path: str | Path,
+    reference_frame: Any,
+    *,
+    encoder: MolecularFeatureBuilder,
+    categorical_maps: dict[str, dict[str, int]],
+    adapter_map: dict[str, int] | None,
+    numeric_stats: dict[str, tuple[float, float]],
+    target_column: str,
+    target_scaler: TargetScaler | None,
+    zscore_correction: ZScoreCorrection | None,
+    ablation: AblationSpec,
+    config: CensoredLossConfig,
+    kept_task_heads: tuple[str, ...],
+    split_parts: tuple[str, ...],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    import pandas as pd
+
+    split_part_set = {part.lower() for part in config.split_parts}
+    kept_tasks = {str(task) for task in kept_task_heads}
+    reference_lookup = censored_reference_split_lookup(reference_frame)
+    fallback_aquatic_train = any(
+        str(row.get("medium_domain", "")).lower() == "aquatic"
+        and str(row.get("split_part", "")).lower() == "train"
+        for _, row in reference_frame.iterrows()
+    )
+    rows: list[dict[str, Any]] = []
+    skipped: Counter[str] = Counter()
+    candidates = 0
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        for raw in conn.execute(
+            """
+            SELECT *
+            FROM target_records
+            WHERE value_quality LIKE 'censored%'
+              AND target_status = 'excluded'
+            """
+        ):
+            candidates += 1
+            row = dict(raw)
+            operator = first_censor_operator(row)
+            if operator not in config.include_ops:
+                skipped["unsupported_operator"] += 1
+                continue
+            direction = censored_direction(operator)
+            direction_id = 1 if direction == "right" else -1 if direction == "left" else 0
+            if direction_id == 0:
+                skipped["missing_direction"] += 1
+                continue
+            task = map_censored_task(row)
+            if not task:
+                skipped["unmapped_task"] += 1
+                continue
+            if task["task_head"] not in kept_tasks:
+                skipped["task_not_trained"] += 1
+                continue
+            bound = censored_bound_value(row)
+            if bound is None:
+                skipped["missing_or_unsupported_bound"] += 1
+                continue
+            split_part = resolve_censored_split_part(
+                row,
+                task_head=task["task_head"],
+                reference_lookup=reference_lookup,
+                fallback_aquatic_train=fallback_aquatic_train,
+            )
+            if not split_part:
+                skipped["unmatched_split"] += 1
+                continue
+            if split_part not in split_part_set:
+                skipped["split_not_trainable"] += 1
+                continue
+            payload = dict(row)
+            payload.update(task)
+            payload["aggregate_id"] = f"censored:{payload.get('record_id', len(rows))}"
+            payload["split_part"] = split_part
+            payload["target_value"] = bound
+            payload["target_value_median"] = bound
+            payload["censored_direction"] = direction
+            payload["censored_direction_id"] = direction_id
+            payload["censored_operator"] = operator
+            payload["censored_bound_raw"] = bound
+            payload["censored_value_quality"] = payload.get("value_quality", "")
+            rows.append(payload)
+    if not rows:
+        return [], {
+            **config.to_manifest(),
+            "candidate_rows": candidates,
+            "usable_rows": 0,
+            "train_rows": 0,
+            "finetune_rows": 0,
+            "skipped_rows": dict(sorted(skipped.items())),
+        }
+    censored_frame = add_duration_nonlinear_features(pd.DataFrame(rows))
+    samples = build_deep_samples(
+        censored_frame,
+        encoder=encoder,
+        categorical_maps=categorical_maps,
+        adapter_map=adapter_map,
+        numeric_stats=numeric_stats,
+        target_column=target_column,
+        target_scaler=target_scaler,
+        zscore_correction=zscore_correction,
+        ablation=ablation,
+    )
+    for sample, row in zip(samples, rows):
+        sample["censored_direction"] = row["censored_direction"]
+        sample["censored_direction_id"] = row["censored_direction_id"]
+        sample["censored_operator"] = row["censored_operator"]
+        sample["censored_bound_raw"] = row["censored_bound_raw"]
+        sample["censored_value_quality"] = row["censored_value_quality"]
+    split_counts = Counter(str(sample.get("split_part", "")).lower() for sample in samples)
+    return samples, {
+        **config.to_manifest(),
+        "candidate_rows": candidates,
+        "usable_rows": len(samples),
+        "train_rows": int(split_counts.get("train", 0)),
+        "finetune_rows": int(split_counts.get("finetune", 0)),
+        "skipped_rows": dict(sorted(skipped.items())),
+    }
+
+
+def censored_reference_split_lookup(frame: Any) -> dict[tuple[str, str, str, str, str, str], set[str]]:
+    lookup: dict[tuple[str, str, str, str, str, str], set[str]] = {}
+    for _, row in frame.iterrows():
+        for identifier in (row.get("cas_number"), row.get("dtxsid")):
+            key = censored_match_key(
+                identifier,
+                row.get("species_number"),
+                row.get("task_head"),
+                row.get("target_name"),
+                row.get("target_basis"),
+                row.get("medium_domain"),
+            )
+            if key[0]:
+                lookup.setdefault(key, set()).add(str(row.get("split_part", "")).lower())
+    return lookup
+
+
+def resolve_censored_split_part(
+    row: Mapping[str, Any],
+    *,
+    task_head: str,
+    reference_lookup: dict[tuple[str, str, str, str, str, str], set[str]],
+    fallback_aquatic_train: bool,
+) -> str:
+    parts: set[str] = set()
+    for identifier in (row.get("cas_number"), row.get("dtxsid")):
+        key = censored_match_key(
+            identifier,
+            row.get("species_number"),
+            task_head,
+            row.get("target_name"),
+            row.get("target_basis"),
+            row.get("medium_domain"),
+        )
+        parts.update(reference_lookup.get(key, set()))
+    if len(parts) == 1:
+        return next(iter(parts))
+    if not parts and fallback_aquatic_train and str(row.get("medium_domain", "")).lower() == "aquatic":
+        return "train"
+    return ""
+
+
+def censored_match_key(
+    identifier: Any,
+    species_number: Any,
+    task_head: Any,
+    target_name: Any,
+    target_basis: Any,
+    medium_domain: Any,
+) -> tuple[str, str, str, str, str, str]:
+    return (
+        clean_match_value(identifier),
+        clean_match_value(species_number),
+        clean_match_value(task_head),
+        clean_match_value(target_name),
+        clean_match_value(target_basis),
+        clean_match_value(medium_domain),
+    )
+
+
+def clean_match_value(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if value != value:
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip().lower()
+
+
+def first_censor_operator(row: Mapping[str, Any]) -> str:
+    for column in ("conc1_mean_op", "conc1_min_op", "conc1_max_op"):
+        value = str(row.get(column, "") or "").strip()
+        if value in {"<", "<=", ">", ">="}:
+            return value
+    return ""
+
+
+def map_censored_task(row: Mapping[str, Any]) -> dict[str, str]:
+    from qsar_tl.data.task_mapping import map_task_head
+
+    mapping = map_task_head(
+        endpoint=row.get("endpoint"),
+        effect=row.get("effect"),
+        measurement=row.get("measurement"),
+        target_name=row.get("target_name"),
+        target_basis=row.get("target_basis"),
+    )
+    if not mapping.task_head:
+        return {}
+    return {
+        "task_head": str(mapping.task_head),
+        "task_family": str(mapping.task_family or ""),
+        "effect_family": str(mapping.effect_family or ""),
+    }
+
+
+def censored_bound_value(row: Mapping[str, Any]) -> float | None:
+    target_name = str(row.get("target_name", "") or "").strip()
+    candidates = []
+    if target_name == "ptox_mol_l":
+        candidates = ("standard_value_mol_l",)
+    elif target_name == "neg_log10_mg_kg":
+        candidates = ("standard_value_mg_kg",)
+    elif target_name == "neg_log10_g_ha":
+        candidates = ("standard_value_g_ha",)
+    elif target_name == "neg_log10_mg_kg_diet":
+        candidates = ("standard_value_mg_kg_diet",)
+    elif target_name == "neg_log10_mg_kg_bw_day":
+        candidates = ("standard_value_mg_kg_bw_day",)
+    else:
+        unit_family = str(row.get("unit_family_v2", "") or "").strip()
+        if unit_family == "water_mol_l":
+            candidates = ("standard_value_mol_l",)
+        elif unit_family == "soil_mg_kg":
+            candidates = ("standard_value_mg_kg",)
+    for column in candidates:
+        value = optional_float(row.get(column))
+        if value is not None and value > 0:
+            return -math.log10(value)
+    return None
+
+
 def active_categorical_columns(ablation: AblationSpec) -> tuple[str, ...]:
     columns: list[str] = []
     for column in CATEGORICAL_COLUMNS:
@@ -2138,10 +2465,18 @@ def apply_source_similarity_weights(
     }
     if not config.active():
         return summary
-    if config.method not in {"tanimoto", "tanimoto_to_target", "tanimoto_to_finetune"}:
+    allowed_methods = {
+        "tanimoto",
+        "tanimoto_to_target",
+        "tanimoto_to_finetune",
+        "proxy_distance_to_finetune",
+        "tanimoto_proxy_to_finetune",
+    }
+    if config.method not in allowed_methods:
         raise ValueError(
             "training.source_weighting.method must be 'none', 'tanimoto', "
-            "'tanimoto_to_target', or 'tanimoto_to_finetune'."
+            "'tanimoto_to_target', 'tanimoto_to_finetune', "
+            "'proxy_distance_to_finetune', or 'tanimoto_proxy_to_finetune'."
         )
     source_indices = select_samples_by_domain_and_split(
         samples,
@@ -2157,12 +2492,24 @@ def apply_source_similarity_weights(
     summary["target_reference_samples"] = len(target_indices)
     if not source_indices or not target_indices:
         return summary
-    source_fp = np.asarray([samples[idx].get("fingerprint", []) for idx in source_indices], dtype=np.float32)
-    target_fp = np.asarray([samples[idx].get("fingerprint", []) for idx in target_indices], dtype=np.float32)
-    if source_fp.ndim != 2 or target_fp.ndim != 2 or source_fp.shape[1] != target_fp.shape[1]:
+    similarities: np.ndarray | None = None
+    distances: np.ndarray | None = None
+    raw_weights: np.ndarray | None = None
+    if config.method in {"tanimoto", "tanimoto_to_target", "tanimoto_to_finetune", "tanimoto_proxy_to_finetune"}:
+        source_fp = np.asarray([samples[idx].get("fingerprint", []) for idx in source_indices], dtype=np.float32)
+        target_fp = np.asarray([samples[idx].get("fingerprint", []) for idx in target_indices], dtype=np.float32)
+        if source_fp.ndim != 2 or target_fp.ndim != 2 or source_fp.shape[1] != target_fp.shape[1]:
+            return summary
+        similarities = max_tanimoto_similarity(source_fp, target_fp)
+        raw_weights = 1.0 + float(config.alpha) * similarities
+    if config.method in {"proxy_distance_to_finetune", "tanimoto_proxy_to_finetune"}:
+        source_proxy = proxy_descriptor_matrix(samples, source_indices)
+        target_proxy = proxy_descriptor_matrix(samples, target_indices)
+        distances = min_proxy_distance(source_proxy, target_proxy)
+        proxy_weights = np.exp(-float(config.alpha) * distances)
+        raw_weights = proxy_weights if raw_weights is None else raw_weights * proxy_weights
+    if raw_weights is None:
         return summary
-    similarities = max_tanimoto_similarity(source_fp, target_fp)
-    raw_weights = 1.0 + float(config.alpha) * similarities
     mean_weight = float(np.mean(raw_weights)) if raw_weights.size else 1.0
     if mean_weight > 0 and math.isfinite(mean_weight):
         raw_weights = raw_weights / mean_weight
@@ -2174,15 +2521,68 @@ def apply_source_similarity_weights(
     summary.update(
         {
             "applied": True,
-            "similarity_min": float(np.min(similarities)),
-            "similarity_mean": float(np.mean(similarities)),
-            "similarity_max": float(np.max(similarities)),
             "weight_min": float(np.min(clipped)),
             "weight_mean": float(np.mean(clipped)),
             "weight_max": float(np.max(clipped)),
         }
     )
+    if similarities is not None and similarities.size:
+        summary.update(
+            {
+                "similarity_min": float(np.min(similarities)),
+                "similarity_mean": float(np.mean(similarities)),
+                "similarity_max": float(np.max(similarities)),
+            }
+        )
+    if distances is not None and distances.size:
+        summary.update(
+            {
+                "proxy_distance_min": float(np.min(distances)),
+                "proxy_distance_mean": float(np.mean(distances)),
+                "proxy_distance_max": float(np.max(distances)),
+            }
+        )
     return summary
+
+
+def proxy_descriptor_matrix(samples: list[dict[str, Any]], indices: list[int]) -> np.ndarray:
+    proxy_indices = [0, 1, 2]
+    rows: list[list[float]] = []
+    for idx in indices:
+        values = list(samples[idx].get("molecular_numeric", []))
+        rows.append([safe_proxy_float(values[pos]) if pos < len(values) else 0.0 for pos in proxy_indices])
+    return np.asarray(rows, dtype=np.float32)
+
+
+def safe_proxy_float(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) else 0.0
+
+
+def min_proxy_distance(source_proxy: np.ndarray, target_proxy: np.ndarray, *, batch_size: int = 2048) -> np.ndarray:
+    if source_proxy.ndim != 2 or target_proxy.ndim != 2 or source_proxy.shape[1] != target_proxy.shape[1]:
+        return np.full(source_proxy.shape[0] if source_proxy.ndim >= 1 else 0, np.inf, dtype=np.float32)
+    if source_proxy.shape[0] == 0 or target_proxy.shape[0] == 0:
+        return np.full(source_proxy.shape[0], np.inf, dtype=np.float32)
+    pooled = np.vstack([source_proxy, target_proxy])
+    pooled = np.nan_to_num(pooled, nan=0.0, posinf=0.0, neginf=0.0)
+    mean = pooled.mean(axis=0)
+    std = pooled.std(axis=0)
+    std = np.where(std > 1e-12, std, 1.0)
+    source_scaled = ((np.nan_to_num(source_proxy, nan=0.0, posinf=0.0, neginf=0.0) - mean) / std).astype(np.float32)
+    target_scaled = ((np.nan_to_num(target_proxy, nan=0.0, posinf=0.0, neginf=0.0) - mean) / std).astype(np.float32)
+    target_norm = np.sum(target_scaled * target_scaled, axis=1, dtype=np.float32)[None, :]
+    out = np.empty(source_scaled.shape[0], dtype=np.float32)
+    chunk = max(1, int(batch_size))
+    for start in range(0, source_scaled.shape[0], chunk):
+        batch = source_scaled[start : start + chunk]
+        batch_norm = np.sum(batch * batch, axis=1, dtype=np.float32)[:, None]
+        distances_sq = batch_norm + target_norm - 2.0 * (batch @ target_scaled.T)
+        out[start : start + chunk] = np.sqrt(np.maximum(np.min(distances_sq, axis=1), 0.0))
+    return out
 
 
 def apply_effect_level_frequency_weights(
@@ -2333,10 +2733,16 @@ def select_samples_by_domain_and_split(
 
 
 def max_tanimoto_similarity(source_fp: np.ndarray, target_fp: np.ndarray, *, chunk_size: int = 2048) -> np.ndarray:
-    source = (source_fp > 0).astype(np.float32, copy=False)
-    target = (target_fp > 0).astype(np.float32, copy=False)
+    source_binary = (source_fp > 0).astype(np.uint8, copy=False)
+    target_binary = (target_fp > 0).astype(np.uint8, copy=False)
+    if source_binary.shape[0] == 0 or target_binary.shape[0] == 0:
+        return np.zeros(source_binary.shape[0], dtype=np.float32)
+    source_unique, source_inverse = np.unique(source_binary, axis=0, return_inverse=True)
+    target_unique = np.unique(target_binary, axis=0)
+    source = source_unique.astype(np.float32, copy=False)
+    target = target_unique.astype(np.float32, copy=False)
     target_sums = target.sum(axis=1, keepdims=True).T
-    scores = np.zeros(source.shape[0], dtype=np.float32)
+    unique_scores = np.zeros(source.shape[0], dtype=np.float32)
     for start in range(0, source.shape[0], chunk_size):
         chunk = source[start : start + chunk_size]
         intersections = chunk @ target.T
@@ -2347,8 +2753,8 @@ def max_tanimoto_similarity(source_fp: np.ndarray, target_fp: np.ndarray, *, chu
             out=np.zeros_like(intersections, dtype=np.float32),
             where=denominators > 0,
         )
-        scores[start : start + chunk.shape[0]] = sims.max(axis=1)
-    return scores
+        unique_scores[start : start + chunk.shape[0]] = sims.max(axis=1)
+    return unique_scores[source_inverse]
 
 
 def domain_alignment_reference_indices(
@@ -2585,6 +2991,32 @@ def _toxicity_binning_config(
     )
 
 
+def _censored_loss_config(
+    train_cfg: Mapping[str, Any],
+    *,
+    enabled_override: bool | None = None,
+    weight_override: float | None = None,
+    margin_override: float | None = None,
+) -> CensoredLossConfig:
+    raw = train_cfg.get("censored_loss", {}) if isinstance(train_cfg.get("censored_loss", {}), dict) else {}
+    enabled = bool(raw.get("enabled", False) if enabled_override is None else enabled_override)
+    if weight_override is not None or margin_override is not None:
+        enabled = True
+    method = str(raw.get("method", "hinge")).strip().lower() or "hinge"
+    weight = max(0.0, float(weight_override if weight_override is not None else raw.get("weight", 0.0)))
+    margin = max(0.0, float(margin_override if margin_override is not None else raw.get("margin", 0.0)))
+    return CensoredLossConfig(
+        enabled=enabled,
+        method=method,
+        weight=weight,
+        margin=margin,
+        split_parts=_string_tuple(raw.get("split_parts", ("train", "finetune")), lower=True)
+        or ("train", "finetune"),
+        include_ops=_string_tuple(raw.get("include_ops", ("<", "<=", ">", ">=")), lower=False)
+        or ("<", "<=", ">", ">="),
+    )
+
+
 def _domain_alignment_config(
     train_cfg: Mapping[str, Any],
     *,
@@ -2777,6 +3209,8 @@ def train_one_epoch(
     total_task_loss = 0.0
     total_toxicity_bin_loss = 0.0
     total_toxicity_bin_samples = 0
+    total_censored_loss = 0.0
+    total_censored_samples = 0
     total_alignment_loss = 0.0
     alignment_steps = 0
     total_samples = 0
@@ -2792,6 +3226,8 @@ def train_one_epoch(
         sample_weights = sample_weights.to(device) if sample_weights is not None else None
         toxicity_bin_index = batch.get("toxicity_bin_index")
         toxicity_bin_index = toxicity_bin_index.to(device) if toxicity_bin_index is not None else None
+        censored_direction_id = batch.get("censored_direction_id")
+        censored_direction_id = censored_direction_id.to(device) if censored_direction_id is not None else None
         task_heads = list(batch["task_head"])
         optimizer.zero_grad()
         loss_components = batch_weighted_loss(
@@ -2808,6 +3244,9 @@ def train_one_epoch(
             sample_weights=sample_weights,
             toxicity_bin_index=toxicity_bin_index,
             toxicity_bin_loss_weight=config.toxicity_bin_loss_weight,
+            censored_direction_id=censored_direction_id,
+            censored_loss_weight=config.censored_loss_weight,
+            censored_loss_margin=config.censored_loss_margin,
             return_components=True,
         )
         task_loss = loss_components["regression_loss"]
@@ -2834,6 +3273,10 @@ def train_one_epoch(
         if toxicity_bin_samples > 0:
             total_toxicity_bin_loss += float(loss_components["toxicity_bin_loss"].detach().cpu()) * toxicity_bin_samples
             total_toxicity_bin_samples += toxicity_bin_samples
+        censored_samples = int(loss_components.get("censored_samples", 0))
+        if censored_samples > 0:
+            total_censored_loss += float(loss_components["censored_loss"].detach().cpu()) * censored_samples
+            total_censored_samples += censored_samples
         if alignment_loss is not None:
             total_alignment_loss += float(alignment_loss.detach().cpu())
             alignment_steps += 1
@@ -2844,6 +3287,9 @@ def train_one_epoch(
         "mean_toxicity_bin_loss": total_toxicity_bin_loss / max(total_toxicity_bin_samples, 1),
         "toxicity_bin_samples": total_toxicity_bin_samples,
         "toxicity_bin_loss_weight": config.toxicity_bin_loss_weight,
+        "mean_censored_loss": total_censored_loss / max(total_censored_samples, 1),
+        "censored_samples": total_censored_samples,
+        "censored_loss_weight": config.censored_loss_weight,
         "mean_alignment_loss": total_alignment_loss / max(alignment_steps, 1) if alignment_steps else 0.0,
         "alignment_steps": alignment_steps,
         "samples": total_samples,
@@ -2859,6 +3305,8 @@ def evaluate_loss(model: Any, dataloader: Any, loss_fn: Any, config: DeepTrainin
     total_task_loss = 0.0
     total_toxicity_bin_loss = 0.0
     total_toxicity_bin_samples = 0
+    total_censored_loss = 0.0
+    total_censored_samples = 0
     total_samples = 0
     with torch.no_grad():
         for batch in dataloader:
@@ -2871,6 +3319,8 @@ def evaluate_loss(model: Any, dataloader: Any, loss_fn: Any, config: DeepTrainin
             task_heads = list(batch["task_head"])
             toxicity_bin_index = batch.get("toxicity_bin_index")
             toxicity_bin_index = toxicity_bin_index.to(device) if toxicity_bin_index is not None else None
+            censored_direction_id = batch.get("censored_direction_id")
+            censored_direction_id = censored_direction_id.to(device) if censored_direction_id is not None else None
             loss_components = batch_weighted_loss(
                 model,
                 molecular_numeric,
@@ -2885,6 +3335,9 @@ def evaluate_loss(model: Any, dataloader: Any, loss_fn: Any, config: DeepTrainin
                 sample_weights=None,
                 toxicity_bin_index=toxicity_bin_index,
                 toxicity_bin_loss_weight=config.toxicity_bin_loss_weight,
+                censored_direction_id=censored_direction_id,
+                censored_loss_weight=config.censored_loss_weight,
+                censored_loss_margin=config.censored_loss_margin,
                 return_components=True,
             )
             loss = loss_components["loss"]
@@ -2895,12 +3348,18 @@ def evaluate_loss(model: Any, dataloader: Any, loss_fn: Any, config: DeepTrainin
             if toxicity_bin_samples > 0:
                 total_toxicity_bin_loss += float(loss_components["toxicity_bin_loss"].detach().cpu()) * toxicity_bin_samples
                 total_toxicity_bin_samples += toxicity_bin_samples
+            censored_samples = int(loss_components.get("censored_samples", 0))
+            if censored_samples > 0:
+                total_censored_loss += float(loss_components["censored_loss"].detach().cpu()) * censored_samples
+                total_censored_samples += censored_samples
             total_samples += batch_size
     return {
         "mean_loss": total_loss / max(total_samples, 1),
         "mean_task_loss": total_task_loss / max(total_samples, 1),
         "mean_toxicity_bin_loss": total_toxicity_bin_loss / max(total_toxicity_bin_samples, 1),
         "toxicity_bin_samples": total_toxicity_bin_samples,
+        "mean_censored_loss": total_censored_loss / max(total_censored_samples, 1),
+        "censored_samples": total_censored_samples,
         "samples": total_samples,
     }
 
@@ -2919,17 +3378,29 @@ def batch_weighted_loss(
     sample_weights: Any | None = None,
     toxicity_bin_index: Any | None = None,
     toxicity_bin_loss_weight: float = 0.0,
+    censored_direction_id: Any | None = None,
+    censored_loss_weight: float = 0.0,
+    censored_loss_margin: float = 0.0,
     return_components: bool = False,
 ) -> Any:
     import torch
 
     outputs = model(molecular_numeric, fingerprint, categorical_ids, adapter_ids=adapter_ids)
+    censored_ids = (
+        torch.zeros(targets.shape[0], dtype=torch.long, device=device)
+        if censored_direction_id is None
+        else censored_direction_id.to(device=device, dtype=torch.long)
+    )
+    censored_mask = censored_ids != 0
     losses = []
     weight_sum = 0.0
     for task_head in sorted(set(task_heads)):
         if task_head not in outputs:
             raise KeyError(f"Model did not return prediction head '{task_head}'.")
-        mask = torch.tensor([head == task_head for head in task_heads], dtype=torch.bool, device=device)
+        task_mask = torch.tensor([head == task_head for head in task_heads], dtype=torch.bool, device=device)
+        mask = task_mask & ~censored_mask
+        if not bool(mask.any()):
+            continue
         weight = float(config.task_weights.get(task_head, 1.0))
         weight_sum += weight
         losses.append(
@@ -2946,24 +3417,75 @@ def batch_weighted_loss(
         regression_loss = torch.tensor(0.0, device=device)
     else:
         regression_loss = torch.stack(losses).sum() / max(weight_sum, 1e-12)
-    toxicity_bin_loss, toxicity_bin_samples = toxicity_bin_auxiliary_loss(outputs, toxicity_bin_index)
+    toxicity_bin_loss, toxicity_bin_samples = toxicity_bin_auxiliary_loss(
+        outputs,
+        toxicity_bin_index,
+        mode=config.toxicity_binning_mode,
+    )
+    censored_loss, censored_samples = censored_multitask_loss(
+        outputs,
+        targets=targets,
+        task_heads=task_heads,
+        censored_direction_id=censored_ids,
+        margin=censored_loss_margin,
+    )
     if toxicity_bin_loss is not None and float(toxicity_bin_loss_weight) > 0:
         total_loss = regression_loss + float(toxicity_bin_loss_weight) * toxicity_bin_loss
     else:
         total_loss = regression_loss
         if toxicity_bin_loss is None:
             toxicity_bin_loss = torch.tensor(0.0, device=device)
+    if censored_loss is not None and float(censored_loss_weight) > 0:
+        total_loss = total_loss + float(censored_loss_weight) * censored_loss
+    elif censored_loss is None:
+        censored_loss = torch.tensor(0.0, device=device)
     if return_components:
         return {
             "loss": total_loss,
             "regression_loss": regression_loss,
             "toxicity_bin_loss": toxicity_bin_loss,
             "toxicity_bin_samples": toxicity_bin_samples,
+            "censored_loss": censored_loss,
+            "censored_samples": censored_samples,
         }
     return total_loss
 
 
-def toxicity_bin_auxiliary_loss(outputs: Mapping[str, Any], toxicity_bin_index: Any | None) -> tuple[Any | None, int]:
+def censored_multitask_loss(
+    outputs: Mapping[str, Any],
+    *,
+    targets: Any,
+    task_heads: list[str],
+    censored_direction_id: Any,
+    margin: float = 0.0,
+) -> tuple[Any | None, int]:
+    import torch
+
+    losses = []
+    count = 0
+    device = targets.device
+    direction_ids = censored_direction_id.to(device=device, dtype=censored_direction_id.dtype)
+    for task_head in sorted(set(task_heads)):
+        if task_head not in outputs:
+            raise KeyError(f"Model did not return prediction head '{task_head}'.")
+        mask = torch.tensor([head == task_head for head in task_heads], dtype=torch.bool, device=device)
+        mask = mask & (direction_ids != 0)
+        task_count = int(mask.sum().detach().cpu())
+        if task_count <= 0:
+            continue
+        losses.append(censored_hinge_loss(outputs[task_head][mask], targets[mask], direction_ids[mask], margin=margin))
+        count += task_count
+    if not losses:
+        return None, 0
+    return torch.stack(losses).mean(), count
+
+
+def toxicity_bin_auxiliary_loss(
+    outputs: Mapping[str, Any],
+    toxicity_bin_index: Any | None,
+    *,
+    mode: str = "aux_classification",
+) -> tuple[Any | None, int]:
     import torch
 
     logits = outputs.get(TOXICITY_BIN_LOGITS_KEY)
@@ -2974,6 +3496,8 @@ def toxicity_bin_auxiliary_loss(outputs: Mapping[str, Any], toxicity_bin_index: 
     count = int(mask.sum().detach().cpu())
     if count <= 0:
         return torch.zeros((), dtype=logits.dtype, device=logits.device), 0
+    if str(mode or "").strip().lower() == "ordinal":
+        return ordinal_softmax_loss(logits, targets), count
     return torch.nn.functional.cross_entropy(logits[mask], targets[mask]), count
 
 

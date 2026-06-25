@@ -66,6 +66,7 @@ def build_application_domain_report(
     tanimoto = max_tanimoto_to_train(fingerprint_matrix, train_mask.to_numpy(dtype=bool))
     taxon_similarity = max_taxon_similarity_to_train(frame, train_mask.to_numpy(dtype=bool), cfg.taxon_columns)
     taxon_distance = 1.0 - taxon_similarity
+    species_context = species_context_flags(frame, train_mask.to_numpy(dtype=bool))
 
     output = frame[metadata_columns(frame)].copy()
     output["williams_leverage"] = leverage
@@ -77,6 +78,8 @@ def build_application_domain_report(
     output["max_taxon_similarity_to_train"] = taxon_similarity
     output["taxon_distance_to_train"] = taxon_distance
     output["species_in_domain_taxon"] = taxon_similarity >= cfg.taxon_similarity_threshold
+    for column, values in species_context.items():
+        output[column] = values
     output["overall_in_domain"] = output["chemical_in_domain_either"] & output["species_in_domain_taxon"]
     output["ad_warning"] = [
         ad_warning(chemical_ok, species_ok)
@@ -270,6 +273,7 @@ def metadata_columns(frame: pd.DataFrame) -> list[str]:
         "split_part",
         "task_head",
         "target_name",
+        "task_family",
         "target_basis",
         "medium_domain",
         "cas_number",
@@ -279,8 +283,61 @@ def metadata_columns(frame: pd.DataFrame) -> list[str]:
         "species_number",
         "latin_name",
         *DEFAULT_TAXON_COLUMNS,
+        "genus",
+        "species",
+        "organism_lifestage",
     ]
     return [column for column in preferred if column in frame.columns]
+
+
+def species_context_flags(frame: pd.DataFrame, train_mask: np.ndarray) -> dict[str, list[bool]]:
+    train_frame = frame.loc[train_mask]
+    latin_seen = normalized_set(train_frame, "latin_name")
+    genus_seen = normalized_set(train_frame, "genus")
+    family_seen = normalized_set(train_frame, "family")
+    order_seen = normalized_set(train_frame, "tax_order")
+    lifestage_seen = normalized_set(train_frame, "organism_lifestage")
+    species_task_seen = {
+        (normalize_text(row.get("latin_name")), normalize_text(row.get("task_family")))
+        for _, row in train_frame.iterrows()
+        if normalize_text(row.get("latin_name")) and normalize_text(row.get("task_family"))
+    }
+    return {
+        "species_seen_train": [normalize_text(value) in latin_seen for value in column_values(frame, "latin_name")],
+        "genus_seen_train": [normalize_text(value) in genus_seen for value in column_values(frame, "genus")],
+        "family_seen_train": [normalize_text(value) in family_seen for value in column_values(frame, "family")],
+        "order_seen_train": [normalize_text(value) in order_seen for value in column_values(frame, "tax_order")],
+        "life_stage_seen_train": [
+            normalize_text(value) in lifestage_seen for value in column_values(frame, "organism_lifestage")
+        ],
+        "species_task_family_seen_train": [
+            (normalize_text(row.get("latin_name")), normalize_text(row.get("task_family"))) in species_task_seen
+            for _, row in frame.iterrows()
+        ],
+    }
+
+
+def column_values(frame: pd.DataFrame, column: str) -> list[object]:
+    if column not in frame.columns:
+        return [None] * len(frame)
+    return list(frame[column])
+
+
+def normalized_set(frame: pd.DataFrame, column: str) -> set[str]:
+    if column not in frame.columns:
+        return set()
+    return {normalize_text(value) for value in frame[column] if normalize_text(value)}
+
+
+def normalize_text(value: object) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except TypeError:
+        pass
+    return str(value).strip().lower()
 
 
 def ad_warning(chemical_in_domain: Any, species_in_domain: Any) -> str:

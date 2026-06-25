@@ -155,6 +155,26 @@ training:
     boundary_tolerance: 0.05
     threshold_multiplier: 1.0
     require_active_bin_for_regression: false
+  censored_loss:
+    enabled: false
+    method: hinge
+    weight: 0.0
+    margin: 0.0
+    split_parts:
+      - train
+      - finetune
+    include_ops:
+      - "<"
+      - "<="
+      - ">"
+      - ">="
+  proxy_transfer:
+    enabled: false
+    method: none
+  domain_alignment:
+    enabled: false
+    method: none
+    weight: 0.0
   task_weighting: balanced
   main_task_weight: 1.0
   toxicity_aux_task_weight: 0.35
@@ -298,7 +318,7 @@ evaluation:
       - permutation_importance
       - shap
   application_domain:
-    enabled: true
+    enabled: false
     chemical:
       williams_leverage: true
       tanimoto_threshold: 0.5

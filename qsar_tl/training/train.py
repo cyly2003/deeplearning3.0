@@ -14,6 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", default=None, help="Override derived SQLite database path")
     parser.add_argument("--split-name", default=None, help="Split assignment name")
     parser.add_argument("--source-table", default=None, help="Override modeling source table")
+    parser.add_argument("--seed", type=int, default=None, help="Override project.seed for reproducible split sampling")
     parser.add_argument("--limit", type=int, default=None, help="Optional row limit for smoke training")
     parser.add_argument("--epochs", type=int, default=None, help="Override training epochs")
     parser.add_argument("--batch-size", type=int, default=None, help="Override batch size")
@@ -65,7 +66,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--source-weighting-method",
         default=None,
-        choices=["none", "tanimoto", "tanimoto_to_target", "tanimoto_to_finetune"],
+        choices=[
+            "none",
+            "tanimoto",
+            "tanimoto_to_target",
+            "tanimoto_to_finetune",
+            "proxy_distance_to_finetune",
+            "tanimoto_proxy_to_finetune",
+        ],
     )
     parser.add_argument("--source-weighting-alpha", type=float, default=None)
     parser.add_argument("--effect-level-weighting", dest="effect_level_weighting_enabled", action="store_true", default=None)
@@ -73,9 +81,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--effect-level-weighting-beta", type=float, default=None)
     parser.add_argument("--toxicity-binning", dest="toxicity_binning_enabled", action="store_true", default=None)
     parser.add_argument("--no-toxicity-binning", dest="toxicity_binning_enabled", action="store_false")
-    parser.add_argument("--toxicity-binning-mode", default=None, choices=["aux_classification", "soft_expert"])
+    parser.add_argument("--toxicity-binning-mode", default=None, choices=["aux_classification", "ordinal", "soft_expert"])
     parser.add_argument("--toxicity-binning-loss-weight", type=float, default=None)
     parser.add_argument("--toxicity-binning-scheme", default=None)
+    parser.add_argument("--censored-loss", dest="censored_loss_enabled", action="store_true", default=None)
+    parser.add_argument("--no-censored-loss", dest="censored_loss_enabled", action="store_false")
+    parser.add_argument("--censored-loss-weight", type=float, default=None)
+    parser.add_argument("--censored-loss-margin", type=float, default=None)
     parser.add_argument("--domain-alignment-method", default=None, choices=["none", "coral"])
     parser.add_argument("--domain-alignment-weight", type=float, default=None)
     parser.add_argument("--swa", dest="swa_enabled", action="store_true", default=None)
@@ -109,7 +121,7 @@ def main() -> None:
         out_dir=run_dir,
         config=config,
         limit=args.limit,
-        seed=int(config.get("project", {}).get("seed", 42)),
+        seed=int(args.seed if args.seed is not None else config.get("project", {}).get("seed", 42)),
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
@@ -148,6 +160,9 @@ def main() -> None:
         toxicity_binning_mode=args.toxicity_binning_mode,
         toxicity_binning_loss_weight=args.toxicity_binning_loss_weight,
         toxicity_binning_scheme=args.toxicity_binning_scheme,
+        censored_loss_enabled=args.censored_loss_enabled,
+        censored_loss_weight=args.censored_loss_weight,
+        censored_loss_margin=args.censored_loss_margin,
         domain_alignment_method=args.domain_alignment_method,
         domain_alignment_weight=args.domain_alignment_weight,
         swa_enabled=args.swa_enabled,

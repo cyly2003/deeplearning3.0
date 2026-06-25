@@ -86,6 +86,8 @@ def test_build_application_domain_report_outputs_chemical_and_species_ad(tmp_pat
     assert test_row["chemical_in_domain_tanimoto"]
     assert test_row["max_taxon_similarity_to_train"] == 0.2
     assert not test_row["species_in_domain_taxon"]
+    assert not test_row["species_seen_train"]
+    assert not test_row["family_seen_train"]
     assert test_row["ad_warning"] == "species_extrapolation"
     assert out_path.with_suffix(".csv.manifest.json").exists()
 

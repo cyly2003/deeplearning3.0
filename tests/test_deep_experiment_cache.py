@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 
 from qsar_tl.modeling.dataset import AggregatedTaskDataset
@@ -20,6 +21,7 @@ from qsar_tl.training.deep_experiment import (
     apply_effect_level_frequency_weights,
     apply_finetune_freeze,
     apply_source_similarity_weights,
+    build_censored_training_samples,
     batch_weighted_loss,
     build_deep_samples,
     build_molecular_feature_cache,
@@ -34,12 +36,15 @@ from qsar_tl.training.deep_experiment import (
     fit_target_scaler,
     fit_zscore_correction,
     load_molecular_feature_cache,
+    max_tanimoto_similarity,
     metrics_by_group,
+    min_proxy_distance,
     normalize_clipped_weights,
     predict_all,
     split_finetune_validation_indices,
     split_training_validation_indices,
     ZScoreCorrectionConfig,
+    CensoredLossConfig,
 )
 from qsar_tl.training.deep_train import DeepTrainingConfig
 from qsar_tl.training.deep_train import collate_aggregated_task_batch
@@ -147,6 +152,86 @@ def test_no_context_ablation_removes_categorical_context(tmp_path: Path) -> None
     assert active_categorical_columns(spec) == ()
     assert samples[0]["categorical_ids"] == {}
     assert all(value == 0.0 for value in samples[0]["molecular_numeric"][2:])
+
+
+def test_build_censored_training_samples_uses_reference_split(tmp_path: Path) -> None:
+    db_path = tmp_path / "targets.sqlite"
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE target_records (
+                record_id TEXT,
+                cas_number TEXT,
+                dtxsid TEXT,
+                species_number TEXT,
+                endpoint TEXT,
+                effect TEXT,
+                measurement TEXT,
+                target_name TEXT,
+                target_basis TEXT,
+                target_status TEXT,
+                value_quality TEXT,
+                excluded_reason TEXT,
+                conc1_mean_op TEXT,
+                conc1_min_op TEXT,
+                conc1_max_op TEXT,
+                standard_value_mol_l REAL,
+                medium_domain TEXT,
+                smiles TEXT,
+                latin_name TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO target_records VALUES (
+                'r1','50-00-0','DTXSID1','sp1','EC50','MOR','','ptox_mol_l','mol/L',
+                'excluded','censored','censored_toxicity_value','>','','',
+                0.001,'aquatic','CCO','Daphnia magna'
+            )
+            """
+        )
+        conn.commit()
+    frame = pd.DataFrame(
+        [
+            {
+                "aggregate_id": "a1",
+                "cas_number": "50-00-0",
+                "dtxsid": "DTXSID1",
+                "species_number": "sp1",
+                "task_head": "ECx_Mortality",
+                "target_name": "ptox_mol_l",
+                "target_basis": "mol/L",
+                "target_family": "aquatic_pTox_mol_L",
+                "medium_domain": "aquatic",
+                "split_part": "train",
+                "smiles": "CCO",
+                "target_value": 3.0,
+            }
+        ]
+    )
+    builder = MolecularFeatureBuilder(fingerprint_size=4, cache_path=_cache_path(tmp_path))
+    samples, summary = build_censored_training_samples(
+        db_path,
+        frame,
+        encoder=builder,
+        categorical_maps=fit_categorical_maps(frame, ablation=ABLATION_SPECS["full"]),
+        adapter_map=fit_adapter_map(frame, ablation=ABLATION_SPECS["full"]),
+        numeric_stats=fit_numeric_stats(frame, builder, ablation=ABLATION_SPECS["full"]),
+        target_column="target_value",
+        target_scaler=fit_target_scaler(frame, target_column="target_value", mode="none"),
+        zscore_correction=None,
+        ablation=ABLATION_SPECS["full"],
+        config=CensoredLossConfig(enabled=True, weight=0.03),
+        kept_task_heads=("ECx_Mortality",),
+        split_parts=("train",),
+    )
+
+    assert summary["usable_rows"] == 1
+    assert summary["train_rows"] == 1
+    assert samples[0]["censored_direction"] == "right"
+    assert samples[0]["censored_direction_id"] == 1
+    assert samples[0]["target_value_raw"] == pytest.approx(3.0)
 
 
 def test_no_molecular_residual_ablation_disables_residual_layer() -> None:
@@ -534,6 +619,116 @@ def test_source_similarity_weighting_upweights_target_like_source_samples() -> N
     assert summary["applied"] is True
     assert samples[0]["sample_weight"] > samples[1]["sample_weight"]
     assert samples[2]["sample_weight"] == 1.0
+
+
+def test_proxy_distance_weighting_upweights_proxy_near_source_samples() -> None:
+    samples = [
+        {
+            "split_part": "train",
+            "medium_domain": "aquatic",
+            "fingerprint": [1.0, 0.0],
+            "molecular_numeric": [0.0, 0.0, 0.0, 9.0],
+        },
+        {
+            "split_part": "train",
+            "medium_domain": "aquatic",
+            "fingerprint": [0.0, 1.0],
+            "molecular_numeric": [8.0, 8.0, 8.0, 9.0],
+        },
+        {
+            "split_part": "finetune",
+            "medium_domain": "soil",
+            "fingerprint": [0.0, 1.0],
+            "molecular_numeric": [0.1, 0.1, 0.1, 9.0],
+        },
+    ]
+    config = SourceWeightingConfig(enabled=True, method="proxy_distance_to_finetune", alpha=1.0)
+
+    summary = apply_source_similarity_weights(samples, config)
+
+    assert summary["applied"] is True
+    assert "proxy_distance_mean" in summary
+    assert samples[0]["sample_weight"] > samples[1]["sample_weight"]
+    assert samples[2]["sample_weight"] == 1.0
+
+
+def test_tanimoto_proxy_weighting_reports_similarity_and_proxy_distance() -> None:
+    samples = [
+        {
+            "split_part": "train",
+            "medium_domain": "aquatic",
+            "fingerprint": [1.0, 0.0, 0.0],
+            "molecular_numeric": [0.0, 0.0, 0.0],
+        },
+        {
+            "split_part": "train",
+            "medium_domain": "aquatic",
+            "fingerprint": [0.0, 1.0, 0.0],
+            "molecular_numeric": [4.0, 4.0, 4.0],
+        },
+        {
+            "split_part": "finetune",
+            "medium_domain": "soil",
+            "fingerprint": [1.0, 0.0, 0.0],
+            "molecular_numeric": [0.1, 0.1, 0.1],
+        },
+    ]
+    config = SourceWeightingConfig(enabled=True, method="tanimoto_proxy_to_finetune", alpha=1.0)
+
+    summary = apply_source_similarity_weights(samples, config)
+
+    assert summary["applied"] is True
+    assert "similarity_mean" in summary
+    assert "proxy_distance_mean" in summary
+    assert samples[0]["sample_weight"] > samples[1]["sample_weight"]
+
+
+def test_max_tanimoto_similarity_deduplicates_without_changing_scores() -> None:
+    source = np.asarray(
+        [
+            [1.0, 0.0, 1.0, 0.0],
+            [1.0, 0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    target = np.asarray(
+        [
+            [1.0, 0.0, 1.0, 0.0],
+            [1.0, 0.0, 1.0, 0.0],
+            [0.0, 1.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    expected = []
+    for row in source.astype(bool):
+        row_scores = []
+        for ref in target.astype(bool):
+            intersection = np.logical_and(row, ref).sum()
+            union = np.logical_or(row, ref).sum()
+            row_scores.append(intersection / union if union else 0.0)
+        expected.append(max(row_scores))
+
+    actual = max_tanimoto_similarity(source, target, chunk_size=1)
+
+    np.testing.assert_allclose(actual, np.asarray(expected, dtype=np.float32), rtol=1e-6, atol=1e-6)
+
+
+def test_min_proxy_distance_matches_direct_euclidean_minimum() -> None:
+    source = np.asarray([[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [0.0, 3.0, 0.0]], dtype=np.float32)
+    target = np.asarray([[0.0, 0.0, 0.0], [0.0, 2.0, 0.0]], dtype=np.float32)
+    pooled = np.vstack([source, target])
+    std = np.where(pooled.std(axis=0) > 1e-12, pooled.std(axis=0), 1.0)
+    scaled_source = (source - pooled.mean(axis=0)) / std
+    scaled_target = (target - pooled.mean(axis=0)) / std
+    expected = np.asarray(
+        [np.sqrt(np.min(np.sum((scaled_target - row[None, :]) ** 2, axis=1))) for row in scaled_source],
+        dtype=np.float32,
+    )
+
+    actual = min_proxy_distance(source, target, batch_size=2)
+
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
 
 
 def test_effect_level_weighting_defaults_to_existing_weights() -> None:

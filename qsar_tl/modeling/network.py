@@ -111,7 +111,7 @@ class EcotoxMultiTaskNetwork(nn.Module):
         toxicity_mode = str(config.toxicity_binning_mode or "none").strip().lower()
         self.toxicity_bin_classifier = (
             nn.Linear(head_input_dim, toxicity_bin_count)
-            if toxicity_bin_count > 0 and toxicity_mode in {"aux_classification", "soft_expert"}
+            if toxicity_bin_count > 0 and toxicity_mode in {"aux_classification", "ordinal", "soft_expert"}
             else None
         )
 

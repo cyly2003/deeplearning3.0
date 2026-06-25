@@ -11,6 +11,7 @@ from qsar_tl.modeling.network import DeepModelConfig, EcotoxMultiTaskNetwork, TO
 from qsar_tl.training.deep_train import (
     DeepTrainingConfig,
     collate_aggregated_task_batch,
+    masked_multitask_huber_loss,
     train_model,
 )
 
@@ -102,6 +103,25 @@ def test_multitask_network_forward_shapes() -> None:
     assert outputs["NOEC_Growth"].shape == torch.Size([3])
 
 
+def test_censored_batch_loss_skips_regression_and_adds_hinge() -> None:
+    outputs = {"ECx_Mortality": torch.tensor([2.0, 4.0], dtype=torch.float32)}
+    targets = torch.tensor([2.0, 3.0], dtype=torch.float32)
+    loss_fn = torch.nn.HuberLoss(delta=1.0, reduction="mean")
+
+    loss = masked_multitask_huber_loss(
+        outputs=outputs,
+        targets=targets,
+        task_heads=["ECx_Mortality", "ECx_Mortality"],
+        task_weights={"ECx_Mortality": 1.0},
+        loss_fn=loss_fn,
+        censored_direction_id=torch.tensor([0, 1]),
+        censored_loss_weight=0.5,
+        censored_loss_margin=0.0,
+    )
+
+    assert torch.isclose(loss, torch.tensor(0.5))
+
+
 def test_multitask_network_toxicity_bin_auxiliary_logits_shape() -> None:
     dataset = AggregatedTaskDataset(_synthetic_samples())
     batch = collate_aggregated_task_batch([dataset[index] for index in range(3)])
@@ -128,6 +148,33 @@ def test_multitask_network_toxicity_bin_auxiliary_logits_shape() -> None:
 
     assert outputs[TOXICITY_BIN_LOGITS_KEY].shape == torch.Size([3, 5])
     assert outputs["ECx_Mortality"].shape == torch.Size([3])
+
+
+def test_multitask_network_ordinal_toxicity_bin_logits_shape() -> None:
+    dataset = AggregatedTaskDataset(_synthetic_samples())
+    batch = collate_aggregated_task_batch([dataset[index] for index in range(3)])
+    model = EcotoxMultiTaskNetwork(
+        DeepModelConfig(
+            numeric_dim=dataset.numeric_dim(),
+            fingerprint_dim=dataset.fingerprint_dim(),
+            categorical_cardinalities={"primary_medium_id": 3, "species_id": 4},
+            adapter_count=3,
+            task_heads=("ECx_Mortality", "NOEC_Growth"),
+            hidden_dims=(16, 8),
+            dropout=0.0,
+            toxicity_bin_count=5,
+            toxicity_binning_mode="ordinal",
+        )
+    )
+
+    outputs = model(
+        molecular_numeric=batch["molecular_numeric"],
+        fingerprint=batch["fingerprint"],
+        categorical_ids=batch["categorical_ids"],
+        adapter_ids=batch["adapter_id"],
+    )
+
+    assert outputs[TOXICITY_BIN_LOGITS_KEY].shape == torch.Size([3, 5])
 
 
 def test_deep_train_cpu_smoke() -> None:

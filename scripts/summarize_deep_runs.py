@@ -57,6 +57,7 @@ def main() -> None:
             if str(split_part) in EVAL_SPLITS and str(medium).lower() == "aquatic"
         )
         toxicity_manifest = manifest.get("toxicity_binning", {}) if isinstance(manifest.get("toxicity_binning", {}), dict) else {}
+        source_manifest = manifest.get("source_weighting", {}) if isinstance(manifest.get("source_weighting", {}), dict) else {}
         audit_rows.append(
             {
                 "run": strip_version_prefix(run_name),
@@ -72,7 +73,10 @@ def main() -> None:
                 "aquatic_eval_rows": aquatic_eval,
                 "best_epoch": manifest.get("best_epoch", ""),
                 "epochs_ran": manifest.get("epochs_ran", ""),
-                "source_weighting_applied": nested_get(manifest, "source_weighting", "applied"),
+                "source_weighting_applied": source_manifest.get("applied", ""),
+                "source_weighting_method": source_manifest.get("method", ""),
+                "source_weighting_alpha": source_manifest.get("alpha", ""),
+                "source_proxy_distance_mean": source_manifest.get("proxy_distance_mean", ""),
                 "effect_level_weighting_applied": nested_get(manifest, "effect_level_weighting", "applied"),
                 "toxicity_binning_applied": toxicity_manifest.get("applied", ""),
                 "toxicity_bin_eligible_samples": toxicity_manifest.get("eligible_samples", ""),
@@ -184,6 +188,9 @@ def main() -> None:
             "best_epoch",
             "epochs_ran",
             "source_weighting_applied",
+            "source_weighting_method",
+            "source_weighting_alpha",
+            "source_proxy_distance_mean",
             "effect_level_weighting_applied",
             "toxicity_binning_applied",
             "toxicity_bin_eligible_samples",

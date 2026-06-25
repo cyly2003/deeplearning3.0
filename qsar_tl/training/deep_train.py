@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
 from qsar_tl.modeling.network import TOXICITY_BIN_LOGITS_KEY
+from qsar_tl.training.censored_loss import censored_hinge_loss
+from qsar_tl.training.ordinal_binning import ordinal_softmax_loss
 
 try:
     import torch
@@ -32,6 +34,9 @@ class DeepTrainingConfig:
     seed: int = 42
     num_workers: int = 0
     toxicity_bin_loss_weight: float = 0.0
+    toxicity_binning_mode: str = "aux_classification"
+    censored_loss_weight: float = 0.0
+    censored_loss_margin: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -72,6 +77,10 @@ def collate_aggregated_task_batch(batch: Sequence[Mapping[str, Any]]) -> dict[st
         [int(sample.get("toxicity_bin_index", -1) if sample.get("toxicity_bin_index", -1) is not None else -1) for sample in batch],
         dtype=torch.long,
     )
+    censored_direction_id = torch.tensor(
+        [int(sample.get("censored_direction_id", 0) or 0) for sample in batch],
+        dtype=torch.long,
+    )
     adapter_id = torch.tensor(
         [int(sample.get("adapter_id", 0) or 0) for sample in batch],
         dtype=torch.long,
@@ -105,6 +114,7 @@ def collate_aggregated_task_batch(batch: Sequence[Mapping[str, Any]]) -> dict[st
         "target_value": target_value,
         "sample_weight": sample_weight,
         "toxicity_bin_index": toxicity_bin_index,
+        "censored_direction_id": censored_direction_id,
         "split_part": [str(sample.get("split_part", "")) for sample in batch],
         "medium_domain": [str(sample.get("medium_domain", "")) for sample in batch],
     }
@@ -179,6 +189,8 @@ def train_one_epoch(
         task_heads = list(batch["task_head"])
         toxicity_bin_index = batch.get("toxicity_bin_index")
         toxicity_bin_index = toxicity_bin_index.to(target_device) if toxicity_bin_index is not None else None
+        censored_direction_id = batch.get("censored_direction_id")
+        censored_direction_id = censored_direction_id.to(target_device) if censored_direction_id is not None else None
 
         optimizer.zero_grad()
         outputs = model(
@@ -195,6 +207,10 @@ def train_one_epoch(
             loss_fn=loss_fn,
             toxicity_bin_index=toxicity_bin_index,
             toxicity_bin_loss_weight=config.toxicity_bin_loss_weight,
+            toxicity_binning_mode=config.toxicity_binning_mode,
+            censored_direction_id=censored_direction_id,
+            censored_loss_weight=config.censored_loss_weight,
+            censored_loss_margin=config.censored_loss_margin,
         )
         loss.backward()
         if config.gradient_clip_norm is not None and config.gradient_clip_norm > 0:
@@ -235,38 +251,90 @@ def masked_multitask_huber_loss(
     loss_fn: nn.Module,
     toxicity_bin_index: torch.Tensor | None = None,
     toxicity_bin_loss_weight: float = 0.0,
+    toxicity_binning_mode: str = "aux_classification",
+    censored_direction_id: torch.Tensor | None = None,
+    censored_loss_weight: float = 0.0,
+    censored_loss_margin: float = 0.0,
 ) -> torch.Tensor:
     device = targets.device
     losses: list[torch.Tensor] = []
+    censored_mask = (
+        torch.zeros(targets.shape[0], dtype=torch.bool, device=device)
+        if censored_direction_id is None
+        else censored_direction_id.to(device=device, dtype=torch.long) != 0
+    )
     for task_head in sorted(set(task_heads)):
         if task_head not in outputs:
             raise KeyError(f"Model did not return prediction head '{task_head}'.")
-        mask = torch.tensor(
+        task_mask = torch.tensor(
             [head == task_head for head in task_heads],
             dtype=torch.bool,
             device=device,
         )
+        mask = task_mask & ~censored_mask
         if not bool(mask.any()):
             continue
         weight = float(task_weights.get(task_head, 1.0))
         losses.append(weight * loss_fn(outputs[task_head][mask], targets[mask]))
     if not losses:
-        raise ValueError("No task losses were computed for this batch.")
-    weight_sum = sum(float(task_weights.get(task_head, 1.0)) for task_head in sorted(set(task_heads)))
-    regression_loss = torch.stack(losses).sum() / max(weight_sum, 1e-12)
+        regression_loss = torch.zeros((), dtype=targets.dtype, device=device)
+        weight_sum = 1.0
+    else:
+        weight_sum = sum(
+            float(task_weights.get(task_head, 1.0))
+            for task_head in sorted(set(head for head, is_censored in zip(task_heads, censored_mask.tolist()) if not is_censored))
+        )
+        regression_loss = torch.stack(losses).sum() / max(weight_sum, 1e-12)
+    censored_loss = multitask_censored_hinge_loss(
+        outputs,
+        targets=targets,
+        task_heads=task_heads,
+        censored_direction_id=censored_direction_id,
+        margin=censored_loss_margin,
+    )
     aux_loss = toxicity_bin_classification_loss(
         outputs,
         toxicity_bin_index=toxicity_bin_index,
+        mode=toxicity_binning_mode,
     )
-    if aux_loss is None or float(toxicity_bin_loss_weight) <= 0:
-        return regression_loss
-    return regression_loss + float(toxicity_bin_loss_weight) * aux_loss
+    total_loss = regression_loss
+    if aux_loss is not None and float(toxicity_bin_loss_weight) > 0:
+        total_loss = total_loss + float(toxicity_bin_loss_weight) * aux_loss
+    if censored_loss is not None and float(censored_loss_weight) > 0:
+        total_loss = total_loss + float(censored_loss_weight) * censored_loss
+    return total_loss
+
+
+def multitask_censored_hinge_loss(
+    outputs: Mapping[str, torch.Tensor],
+    *,
+    targets: torch.Tensor,
+    task_heads: Sequence[str],
+    censored_direction_id: torch.Tensor | None,
+    margin: float = 0.0,
+) -> torch.Tensor | None:
+    if censored_direction_id is None:
+        return None
+    device = targets.device
+    direction_ids = censored_direction_id.to(device=device, dtype=torch.long)
+    losses: list[torch.Tensor] = []
+    for task_head in sorted(set(task_heads)):
+        if task_head not in outputs:
+            raise KeyError(f"Model did not return prediction head '{task_head}'.")
+        mask = torch.tensor([head == task_head for head in task_heads], dtype=torch.bool, device=device)
+        mask = mask & (direction_ids != 0)
+        if bool(mask.any()):
+            losses.append(censored_hinge_loss(outputs[task_head][mask], targets[mask], direction_ids[mask], margin=margin))
+    if not losses:
+        return None
+    return torch.stack(losses).mean()
 
 
 def toxicity_bin_classification_loss(
     outputs: Mapping[str, torch.Tensor],
     *,
     toxicity_bin_index: torch.Tensor | None,
+    mode: str = "aux_classification",
 ) -> torch.Tensor | None:
     logits = outputs.get(TOXICITY_BIN_LOGITS_KEY)
     if logits is None or toxicity_bin_index is None:
@@ -275,6 +343,8 @@ def toxicity_bin_classification_loss(
     mask = targets >= 0
     if not bool(mask.any()):
         return torch.zeros((), dtype=logits.dtype, device=logits.device)
+    if str(mode or "").strip().lower() == "ordinal":
+        return ordinal_softmax_loss(logits, targets)
     return torch.nn.functional.cross_entropy(logits[mask], targets[mask])
 
 

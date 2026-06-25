@@ -24,7 +24,7 @@ class ToxicityBinningConfig:
     require_active_bin_for_regression: bool = False
 
     def active(self) -> bool:
-        return self.enabled and self.mode in {"aux_classification", "soft_expert"} and self.loss_weight > 0
+        return self.enabled and self.mode in {"aux_classification", "ordinal", "soft_expert"} and self.loss_weight > 0
 
     def to_manifest(self) -> dict[str, Any]:
         return {
