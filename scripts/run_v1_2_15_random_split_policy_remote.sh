@@ -17,6 +17,9 @@ LOG_DIR="${LOG_DIR:-outputs/logs}"
 RUN_TIMES="${RUN_TIMES:-${LOG_DIR}/run_v1_2_15_random_split_policy_times.csv}"
 
 SEED="${SEED:-42}"
+SEEDS="${SEEDS:-$SEED}"
+SPLIT_SEED="${SPLIT_SEED:-42}"
+ENSEMBLE_SEEDS="${ENSEMBLE_SEEDS:-$SEEDS}"
 FOLDS="${FOLDS:-1 2 3 4 5}"
 RUN_RANDOM8="${RUN_RANDOM8:-1}"
 RUN_5FOLD="${RUN_5FOLD:-1}"
@@ -109,7 +112,7 @@ build_one_transfer_split() {
     --soil-split-name "$soil_split" \
     --split-name "$transfer_split" \
     --soil-finetune-fraction 1.0 \
-    --seed "$SEED"
+    --seed "$SPLIT_SEED"
 }
 
 build_splits() {
@@ -127,6 +130,7 @@ build_splits() {
 run_transfer() {
   local run_name="$1"
   local split="$2"
+  local run_seed="$3"
   local out_dir="${OUT_ROOT}/v1.2.15_${run_name}/deep/full/${split}"
   if [[ -s "${out_dir}/predictions.csv" && -s "${out_dir}/manifest.json" && -s "${out_dir}/history.csv" ]]; then
     echo "[skip-existing] transfer ${run_name} ${split}"
@@ -136,7 +140,7 @@ run_transfer() {
     "$PYTHON_BIN" -m qsar_tl.training.train \
       "${COMMON_ARGS[@]}" \
       --out-dir "$OUT_ROOT" \
-      --seed "$SEED" \
+      --seed "$run_seed" \
       --run-name-zh "$run_name" \
       --split-name "$split" \
       --epochs "$PRETRAIN_EPOCHS" \
@@ -149,19 +153,21 @@ run_transfer() {
 }
 
 run_matrix() {
-  local cw fold run_name split
+  local cw fold run_name split run_seed
   cw="$(weight_label "$F100_CENSORED_WEIGHT")"
-  if [[ "$RUN_RANDOM8" == "1" ]]; then
-    run_name="${RUN_NAME_PREFIX}transfer_f100_anchor_random8_2_seed${SEED}_cebin_lw0025_censored_w${cw}"
-    run_transfer "$run_name" "$RANDOM8_TRANSFER_SPLIT" || return $?
-  fi
-  if [[ "$RUN_5FOLD" == "1" ]]; then
-    for fold in $FOLDS; do
-      run_name="${RUN_NAME_PREFIX}transfer_f100_anchor_random5fold_fold${fold}_seed${SEED}_cebin_lw0025_censored_w${cw}"
-      split="$(fold_transfer_split "$fold")"
-      run_transfer "$run_name" "$split" || return $?
-    done
-  fi
+  for run_seed in $SEEDS; do
+    if [[ "$RUN_RANDOM8" == "1" ]]; then
+      run_name="${RUN_NAME_PREFIX}transfer_f100_anchor_random8_2_seed${run_seed}_cebin_lw0025_censored_w${cw}"
+      run_transfer "$run_name" "$RANDOM8_TRANSFER_SPLIT" "$run_seed" || return $?
+    fi
+    if [[ "$RUN_5FOLD" == "1" ]]; then
+      for fold in $FOLDS; do
+        run_name="${RUN_NAME_PREFIX}transfer_f100_anchor_random5fold_fold${fold}_seed${run_seed}_cebin_lw0025_censored_w${cw}"
+        split="$(fold_transfer_split "$fold")"
+        run_transfer "$run_name" "$split" "$run_seed" || return $?
+      done
+    fi
+  done
 }
 
 summarize() {
@@ -174,10 +180,20 @@ summarize() {
     --out-dir "$SUMMARY_OUT" || return $?
 }
 
+summarize_ensemble() {
+  "$PYTHON_BIN" scripts/summarize_split_policy_ensembles.py \
+    --root "$OUT_ROOT" \
+    --out-dir "$SUMMARY_OUT" \
+    --seeds $ENSEMBLE_SEEDS \
+    --write-prediction-rows || return $?
+}
+
 run_smoke() {
   local old_pretrain="$PRETRAIN_EPOCHS"
   local old_finetune="$FINETUNE_EPOCHS"
   local old_folds="$FOLDS"
+  local old_seeds="$SEEDS"
+  local old_ensemble_seeds="$ENSEMBLE_SEEDS"
   local old_out_root="$OUT_ROOT"
   local old_summary_out="$SUMMARY_OUT"
   local old_run_times="$RUN_TIMES"
@@ -185,6 +201,8 @@ run_smoke() {
   PRETRAIN_EPOCHS="${SMOKE_PRETRAIN_EPOCHS:-1}"
   FINETUNE_EPOCHS="${SMOKE_FINETUNE_EPOCHS:-1}"
   FOLDS="${SMOKE_FOLDS:-1}"
+  SEEDS="${SMOKE_SEEDS:-42}"
+  ENSEMBLE_SEEDS="$SEEDS"
   OUT_ROOT="${old_out_root}_smoke"
   SUMMARY_OUT="${old_summary_out}_smoke"
   RUN_TIMES="${LOG_DIR}/run_v1_2_15_random_split_policy_smoke_times.csv"
@@ -197,13 +215,15 @@ run_smoke() {
   PRETRAIN_EPOCHS="$old_pretrain"
   FINETUNE_EPOCHS="$old_finetune"
   FOLDS="$old_folds"
+  SEEDS="$old_seeds"
+  ENSEMBLE_SEEDS="$old_ensemble_seeds"
   OUT_ROOT="$old_out_root"
   SUMMARY_OUT="$old_summary_out"
   RUN_TIMES="$old_run_times"
   RUN_NAME_PREFIX="$old_run_name_prefix"
 }
 
-echo "[start] $(date -Is) v1.2.15 random split policy mode=${MODE} seed=${SEED} folds=${FOLDS}"
+echo "[start] $(date -Is) v1.2.15 random split policy mode=${MODE} seeds=${SEEDS} folds=${FOLDS}"
 case "$MODE" in
   splits)
     build_splits
@@ -213,6 +233,12 @@ case "$MODE" in
     ;;
   summarize)
     summarize
+    ;;
+  ensemble)
+    summarize_ensemble
+    ;;
+  ensemble_all)
+    build_splits && run_matrix && summarize && summarize_ensemble
     ;;
   smoke)
     run_smoke

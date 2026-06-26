@@ -1,6 +1,36 @@
 # Project Status
 
-更新时间：2026-06-26 03:25 (+08:00)
+更新时间：2026-06-26 17:25 (+08:00)
+
+## 2026-06-26 v1.2.16 随机划分 3-seed ensemble 扩展完成
+
+- 目标：在 v1.2.15 随机 8:2 / 随机 5-fold split-policy pilot 基础上加入 seed ensemble，检验随机划分下 ensemble 是否继续带来稳定收益。
+- 设计：
+  - 复用 v1.2.15 正式 seed42 run。
+  - 新增 seed：`1042`、`2042`。
+  - ensemble 定义：同一 split、同一 test 样本在 3 个 seed 模型下分别预测，然后平均 `y_pred`；5-fold 情况是在每个 fold 内做 3-seed 平均，再把 5 个 fold 的 ensemble test 预测拼接汇总。
+  - 仍只统计 ECx/LOEC/NOEC soil test focus 行，避免把 ICx/LDx 混入 v1.2.15 的正式比较口径。
+- 新增脚本：
+  - `scripts/summarize_split_policy_ensembles.py`：按 `sample_id/aggregate_id/split/task/y_true` 等 key 对齐多个 seed 的 `predictions.csv`，平均预测并输出 ensemble fold、combined 和 family summary。
+  - `scripts/run_v1_2_15_random_split_policy_remote.sh` 支持 `SEEDS`、`ENSEMBLE_SEEDS` 和 `ensemble/ensemble_all` 模式。
+- 远端运行：
+  - 命令：`SEEDS="42 1042 2042" ENSEMBLE_SEEDS="42 1042 2042" bash scripts/run_v1_2_15_random_split_policy_remote.sh ensemble_all`。
+  - 输出目录仍为：`outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary`。
+  - 12 个新增训练均 `exit_code=0`；新增 seed1042/2042 后正式 run 总数为 18 个（随机 8:2 三个 seed + 5 folds × 三个 seed）。
+- 3-seed ensemble test focus 结果：
+  - 随机 8:2 ensemble：n=3165，MAE=0.6053，RMSE=0.8676，R2=0.7775，Huber=0.2955。
+  - 随机 5-fold ensemble 合并：n=15630，MAE=0.6019，RMSE=0.8601，R2=0.7833，Huber=0.2909。
+- 对照 v1.2.15 seed42 单模型：
+  - 随机 8:2：MAE 0.6449 -> 0.6053，R2 0.7493 -> 0.7775。
+  - 随机 5-fold 合并：MAE 0.6422 -> 0.6019，R2 0.7548 -> 0.7833。
+  - 单模型 3-seed mean 也接近 seed42：随机 8:2 MAE=0.6427 +/- 0.0071；随机 5-fold run 级 MAE=0.6389 +/- 0.0123。ensemble 的改进主要来自预测平均，而不是新 seed 单模型本身显著更强。
+- endpoint family（3-seed ensemble）：
+  - 随机 5-fold：ECx MAE=0.5019/R2=0.8193；LOEC MAE=0.6358/R2=0.7710；NOEC MAE=0.6121/R2=0.7811。
+  - 随机 8:2：ECx MAE=0.5007/R2=0.8125；LOEC MAE=0.6289/R2=0.7712；NOEC MAE=0.6287/R2=0.7693。
+- 阶段性结论：
+  - 随机划分下 ensemble 收益明确，约带来 0.04 log unit 的 MAE 改善和约 0.03 的 R2 提升。
+  - 随机 8:2 与随机 5-fold 的 ensemble 结果仍非常接近，说明这两个随机划分策略给出的同分布性能估计基本一致。
+  - 该结果应作为随机划分/插值场景下的 ensemble 上限参考；论文主线中关于外推能力的论证仍应以固定 chemical-holdout 和 CST-AD 分层为主。
 
 ## 2026-06-26 v1.2.15 随机 8:2 vs 随机 5-fold 划分策略试跑完成
 
