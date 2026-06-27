@@ -152,11 +152,19 @@ bash scripts/run_v1_2_18_mainline_ablation_remote.sh matrix
 
 ```bash
 cd /home/easyai/DL1/ecotox_qsar_transfer
-nohup bash scripts/run_v1_2_20_followup_queue_remote.sh wait_then_followup \
-  > outputs/logs/run_v1_2_20_followup_queue_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+stamp=$(date +%Y%m%d_%H%M%S)
+log=outputs/logs/run_v1_2_20_followup_queue_${stamp}.log
+pidfile=outputs/logs/run_v1_2_20_followup_queue_${stamp}.pid
+setsid bash scripts/run_v1_2_20_followup_queue_remote.sh wait_then_followup \
+  > "$log" 2>&1 < /dev/null &
+echo $! > "$pidfile"
 ```
 
-当前尚未启动该队列；已验证 `check` 模式可正确读出 random refresh 进度。
+当前已启动该队列：
+
+- log：`outputs/logs/run_v1_2_20_followup_queue_20260627_163936.log`
+- pidfile：`outputs/logs/run_v1_2_20_followup_queue_20260627_163936.pid`
+- 初始状态：`complete=1 missing=11 expected=12`，队列正在等待 random refresh 完成。
 
 ## 5. 水相-only 与土壤-only B/C/E 基线
 

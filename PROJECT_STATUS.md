@@ -32,7 +32,8 @@
   - `scripts/run_v1_2_20_followup_queue_remote.sh`。
   - 作用：只负责等待 random 5-seed completion gate 后串联调用 v1.2.18 消融和 v1.2.19 单域 launcher，不复制训练参数。
   - 2026-06-27 16:36 远端验证：`bash -n` 通过；`check` 模式正确报告 `complete=1 missing=11 expected=12` 与 `summary-seeds stale_or_incomplete`。
-  - 当前未启动 `wait_then_followup`；如需自动衔接，可在远端用 `nohup bash scripts/run_v1_2_20_followup_queue_remote.sh wait_then_followup ... &`。
+  - 2026-06-27 16:39 已启动 `wait_then_followup` 后台队列；log 为 `outputs/logs/run_v1_2_20_followup_queue_20260627_163936.log`，pidfile 为 `outputs/logs/run_v1_2_20_followup_queue_20260627_163936.pid`。
+  - 初始状态：`complete=1 missing=11 expected=12`，队列每 600 秒轮询一次；只有 random refresh 完成且 5-seed summary ready 后才会启动 v1.2.18/v1.2.19。
 - 新增单域 B/C/E launcher：
   - `scripts/run_v1_2_19_single_domain_bce_remote.sh`。
   - 域：`aquatic` 使用 `aggregated_task_records_aquatic_ptox_qc`；`soil` 使用 `aggregated_task_records_soil_ptox_qc`。
