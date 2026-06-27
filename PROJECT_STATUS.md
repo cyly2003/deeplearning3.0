@@ -28,6 +28,11 @@
   - `scripts/run_v1_2_18_mainline_ablation_remote.sh`。
   - 默认固定主线 split/参数，只改变模块或策略：`no_fingerprint`、`no_descriptors`、`no_species_lifestage`、`no_duration`、`no_context`、`no_medium_adapter`、`no_molecular_residual`，以及 `no_source_weighting`、`no_toxicity_binning`、`no_censored_loss`。
   - 已同步远端并通过 `bash -n`；尚未启动完整矩阵，避免与当前 random refresh 抢 GPU。
+- 新增后续队列入口：
+  - `scripts/run_v1_2_20_followup_queue_remote.sh`。
+  - 作用：只负责等待 random 5-seed completion gate 后串联调用 v1.2.18 消融和 v1.2.19 单域 launcher，不复制训练参数。
+  - 2026-06-27 16:36 远端验证：`bash -n` 通过；`check` 模式正确报告 `complete=1 missing=11 expected=12` 与 `summary-seeds stale_or_incomplete`。
+  - 当前未启动 `wait_then_followup`；如需自动衔接，可在远端用 `nohup bash scripts/run_v1_2_20_followup_queue_remote.sh wait_then_followup ... &`。
 - 新增单域 B/C/E launcher：
   - `scripts/run_v1_2_19_single_domain_bce_remote.sh`。
   - 域：`aquatic` 使用 `aggregated_task_records_aquatic_ptox_qc`；`soil` 使用 `aggregated_task_records_soil_ptox_qc`。

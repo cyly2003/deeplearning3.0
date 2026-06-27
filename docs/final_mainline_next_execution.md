@@ -128,6 +128,7 @@ E:\TOOLS\anaconda\envs\qsar-ph3\python.exe scripts\build_final_mainline_summary.
 已新增版本化 launcher，而不是复用旧脚本覆盖：
 
 - `scripts/run_v1_2_18_mainline_ablation_remote.sh`
+- 可选顺序队列入口：`scripts/run_v1_2_20_followup_queue_remote.sh`
 - 输出根目录：`outputs/experiments/v1_2_18_mainline_ablation_remote`
 - 汇总目录：`outputs/experiments/v1_2_18_mainline_ablation_remote_summary`
 
@@ -146,6 +147,16 @@ bash scripts/run_v1_2_18_mainline_ablation_remote.sh matrix
 ```
 
 当前状态：脚本已同步远端并通过 `bash -n`，但完整矩阵尚未启动，建议等待 random 5-seed refresh 完成。
+
+如果希望在 random refresh 达到完成判据后自动接上消融和单域矩阵，可在远端后台启动：
+
+```bash
+cd /home/easyai/DL1/ecotox_qsar_transfer
+nohup bash scripts/run_v1_2_20_followup_queue_remote.sh wait_then_followup \
+  > outputs/logs/run_v1_2_20_followup_queue_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+当前尚未启动该队列；已验证 `check` 模式可正确读出 random refresh 进度。
 
 ## 5. 水相-only 与土壤-only B/C/E 基线
 
@@ -172,6 +183,7 @@ bash scripts/run_v1_2_18_mainline_ablation_remote.sh matrix
 已新增版本化 launcher：
 
 - `scripts/run_v1_2_19_single_domain_bce_remote.sh`
+- 可选顺序队列入口：`scripts/run_v1_2_20_followup_queue_remote.sh`
 - 输出根目录：`outputs/experiments/v1_2_19_single_domain_bce_remote`
 - 汇总目录：`outputs/experiments/v1_2_19_single_domain_bce_remote_summary`
 

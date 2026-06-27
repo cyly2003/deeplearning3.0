@@ -32,7 +32,9 @@ fi
 echo "[processes]"
 pgrep -af "run_v1_2_15_random_split_policy_remote|qsar_tl.training.train" \
   | grep -v "check_run" \
-  | grep -v "pgrep -af" || true
+  | grep -v "pgrep -af" \
+  | awk '{ if (length($0) > 220) print substr($0, 1, 220) "..."; else print }' \
+  | head -8 || true
 
 root="outputs/experiments/v1_2_15_random_split_policy_formal_remote"
 summary="outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary"
