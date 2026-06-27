@@ -2,7 +2,7 @@
 
 更新时间：2026-06-27
 
-本文档记录在 `v1.2.17` 方法文档与已有指标汇总完成后的下一批执行入口。它不是结果报告；真正训练完成后仍需更新 `PROJECT_STATUS.md`、`docs/experiment_registry.csv` 和对应 summary 目录。
+本文档记录在 `v1.2.17` 方法文档与已有指标汇总完成后的下一批执行入口。它不是最终结果报告；真正训练完成后仍需更新 `PROJECT_STATUS.md`、`docs/experiment_registry.csv` 和对应 summary 目录。
 
 ## 1. 已完成的优先交付物
 
@@ -38,6 +38,11 @@ SEEDS="3042 4042" ENSEMBLE_SEEDS="42 1042 2042 3042 4042" \
   bash scripts/run_v1_2_15_random_split_policy_remote.sh ensemble_all
 ```
 
+当前状态：
+
+- 已在远端后台启动，日志为 `outputs/logs/run_v1_2_15_random_split_policy_5seed_refresh_20260627_154528.log`。
+- 当前第一项为 `random8_2_seed3042`；完成全部 12 个新增训练后会自动重建 summary 和 5-seed ensemble 表。
+
 完成后需要同步/检查：
 
 - `outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary/split_policy_ensemble_combined_summary.csv`
@@ -51,7 +56,31 @@ SEEDS="3042 4042" ENSEMBLE_SEEDS="42 1042 2042 3042 4042" \
 E:\TOOLS\anaconda\envs\qsar-ph3\python.exe scripts\build_final_mainline_summary.py
 ```
 
-## 3. 主线 5-seed 消融
+## 3. 主线训练空间导出
+
+目标：为后续应用域、覆盖空间、化合物-物种联合空间图准备可直接作图的数据矩阵。
+
+已新增脚本：
+
+- `scripts/export_task_train_space.py`
+
+已完成远端导出并同步到本地：
+
+- `outputs/experiments/final_mainline_train_space/task_train_space_rows.csv.gz`
+- `outputs/experiments/final_mainline_train_space/task_train_chemical_space.csv`
+- `outputs/experiments/final_mainline_train_space/task_train_species_space.csv`
+- `outputs/experiments/final_mainline_train_space/species_embedding_lookup.csv.gz`
+- `outputs/experiments/final_mainline_train_space/task_train_species_embedding_space.csv.gz`
+- `outputs/experiments/final_mainline_train_space/species_embedding_field_manifest.csv`
+
+导出口径：
+
+- split：`M_v2_aquatic_to_soil_ptox_adapt_C_f100`
+- split parts：`train + finetune`
+- 规模：296,368 行、6,610 个化合物、5,393 个物种、116 个训练 task head。
+- embedding 来源：主线 seed42 的 `preprocessing.json` 和 `best_model.pt`；5-seed ensemble 没有单一共享 embedding 空间。
+
+## 4. 主线 5-seed 消融
 
 目标：在固定 `M_v2_aquatic_to_soil_ptox_adapt_C_f100` 与主线参数下，解释最终模型性能来自哪些输入模块和训练策略。
 
@@ -85,13 +114,29 @@ E:\TOOLS\anaconda\envs\qsar-ph3\python.exe scripts\build_final_mainline_summary.
 - no toxicity binning：`--no-toxicity-binning`
 - no censored loss：`--no-censored-loss`
 
-建议新增版本化 launcher，而不是复用旧脚本覆盖：
+已新增版本化 launcher，而不是复用旧脚本覆盖：
 
 - `scripts/run_v1_2_18_mainline_ablation_remote.sh`
 - 输出根目录：`outputs/experiments/v1_2_18_mainline_ablation_remote`
 - 汇总目录：`outputs/experiments/v1_2_18_mainline_ablation_remote_summary`
 
-## 4. 水相-only 与土壤-only B/C/E 基线
+远端 smoke：
+
+```bash
+cd /home/easyai/DL1/ecotox_qsar_transfer
+bash scripts/run_v1_2_18_mainline_ablation_remote.sh smoke
+```
+
+远端正式矩阵：
+
+```bash
+cd /home/easyai/DL1/ecotox_qsar_transfer
+bash scripts/run_v1_2_18_mainline_ablation_remote.sh matrix
+```
+
+当前状态：脚本已同步远端并通过 `bash -n`，但完整矩阵尚未启动，建议等待 random 5-seed refresh 完成。
+
+## 5. 水相-only 与土壤-only B/C/E 基线
 
 目标：证明当前深度框架在单独水相和单独土壤域内也有建模价值，再与迁移线比较。
 
@@ -113,13 +158,29 @@ E:\TOOLS\anaconda\envs\qsar-ph3\python.exe scripts\build_final_mainline_summary.
 - 训练参数尽量沿用主线框架；
 - 不启用 `tanimoto_to_finetune`，因为单域基线没有 aquatic source -> soil finetune 的迁移权重定义。
 
-建议新增版本化 launcher：
+已新增版本化 launcher：
 
 - `scripts/run_v1_2_19_single_domain_bce_remote.sh`
 - 输出根目录：`outputs/experiments/v1_2_19_single_domain_bce_remote`
 - 汇总目录：`outputs/experiments/v1_2_19_single_domain_bce_remote_summary`
 
-## 5. 完成判据
+远端 smoke：
+
+```bash
+cd /home/easyai/DL1/ecotox_qsar_transfer
+bash scripts/run_v1_2_19_single_domain_bce_remote.sh smoke
+```
+
+远端正式矩阵：
+
+```bash
+cd /home/easyai/DL1/ecotox_qsar_transfer
+bash scripts/run_v1_2_19_single_domain_bce_remote.sh matrix
+```
+
+当前状态：脚本已同步远端并通过 `bash -n`，但完整矩阵尚未启动，建议等待 random 5-seed refresh 完成。
+
+## 6. 完成判据
 
 每一批实验完成后至少检查：
 

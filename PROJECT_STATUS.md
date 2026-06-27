@@ -1,6 +1,42 @@
 # Project Status
 
-更新时间：2026-06-27 00:00 (+08:00)
+更新时间：2026-06-27 16:05 (+08:00)
+
+## 2026-06-27 v1.2.18/v1.2.19 后续矩阵入口准备与主线训练空间导出
+
+- 目标：在 v1.2.17 锁定方法文档与已有最终指标后，继续落实三件事：random split 5-seed refresh、主线模块/策略消融入口、单域 aquatic-only/soil-only B/C/E 对照入口，并导出后续应用域/覆盖空间作图所需数据。
+- random split 5-seed refresh：
+  - 远端已启动：`SEEDS="3042 4042" ENSEMBLE_SEEDS="42 1042 2042 3042 4042" bash scripts/run_v1_2_15_random_split_policy_remote.sh ensemble_all`。
+  - 当前日志：`outputs/logs/run_v1_2_15_random_split_policy_5seed_refresh_20260627_154528.log`。
+  - 启动后核验：真实训练进程为 `seed3042 random8_2`，日志已进入 epoch；实际 GPU 进程只有一个训练进程。
+  - 完成后需要同步 `outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary`，再重跑 `scripts/build_final_mainline_summary.py` 刷新 random 5-seed 汇总。
+- 新增训练空间导出脚本：
+  - `scripts/export_task_train_space.py`。
+  - 远端真实导出目录：`outputs/experiments/final_mainline_train_space`；本地已同步同名目录。
+  - 导出 split：`M_v2_aquatic_to_soil_ptox_adapt_C_f100`；source table：`aggregated_task_records_aquatic_soil_ptox_qc`；split parts：`train + finetune`。
+  - 输出文件：
+    - `task_train_space_rows.csv.gz`：训练暴露空间逐行表。
+    - `task_train_chemical_space.csv`：按 `task_head/split_part/chemical` 汇总的 SMILES 化合物空间。
+    - `task_train_species_space.csv`：按 `task_head/split_part/species` 汇总的物种分类学空间。
+    - `species_embedding_lookup.csv.gz`：由主线 seed42 模型 learned taxonomy embedding 拼接得到的物种 embedding lookup。
+    - `task_train_species_embedding_space.csv.gz`：每个子任务物种空间与 embedding 的合并表。
+    - `species_embedding_field_manifest.csv`：各 taxonomy embedding 字段在拼接向量中的维度范围。
+  - 实际导出规模：296,368 行训练暴露记录、6,610 个化合物、5,393 个物种、116 个训练 task head。
+  - 解释边界：`finetune` 是目标土壤微调池；seed-specific `finetune_validation` 没在该导出中拆出。embedding 来源是单个 seed42 模型，不代表 5-seed ensemble 的单一共享 embedding 空间。
+- 新增主线消融 launcher：
+  - `scripts/run_v1_2_18_mainline_ablation_remote.sh`。
+  - 默认固定主线 split/参数，只改变模块或策略：`no_fingerprint`、`no_descriptors`、`no_species_lifestage`、`no_duration`、`no_context`、`no_medium_adapter`、`no_molecular_residual`，以及 `no_source_weighting`、`no_toxicity_binning`、`no_censored_loss`。
+  - 已同步远端并通过 `bash -n`；尚未启动完整矩阵，避免与当前 random refresh 抢 GPU。
+- 新增单域 B/C/E launcher：
+  - `scripts/run_v1_2_19_single_domain_bce_remote.sh`。
+  - 域：`aquatic` 使用 `aggregated_task_records_aquatic_ptox_qc`；`soil` 使用 `aggregated_task_records_soil_ptox_qc`。
+  - 划分：`B_random_8_2`、`C_chemical_holdout_8_2`、`E_random_5fold_fold1-5`。
+  - 固定 full 架构，显式 `--finetune-epochs 0` 与 `--source-weighting-method none`；保留主线的 target standardization、toxicity binning 和 censored loss。
+  - 已同步远端并通过 `bash -n`；尚未启动完整矩阵。
+- 本地验证：
+  - `E:\TOOLS\anaconda\envs\qsar-ph3\python.exe -m py_compile scripts\export_task_train_space.py`
+  - `E:\TOOLS\anaconda\envs\qsar-ph3\python.exe -m pytest tests\test_export_task_train_space.py -q`
+  - 结果：新增导出测试 1 passed。
 
 ## 2026-06-27 v1.2.17 主线材料方法文档与已有最终指标汇总完成
 
