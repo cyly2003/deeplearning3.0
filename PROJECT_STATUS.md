@@ -1,6 +1,36 @@
 # Project Status
 
-更新时间：2026-06-26 17:25 (+08:00)
+更新时间：2026-06-27 00:00 (+08:00)
+
+## 2026-06-27 v1.2.17 主线材料方法文档与已有最终指标汇总完成
+
+- 目标：在开始补跑 5-seed random split、主线 5-seed 消融和单域 B/C/E 基线前，优先固定当前主线方法学描述和已有最终指标包，避免后续实验继续扩展后难以追溯。
+- 新增材料与方法文档：
+  - `docs/final_mainline_methods_materials.md`。
+  - 口径：当前主线定义为 `v1.2.12` aquatic-to-soil pTox transfer，固定 `M_v2_aquatic_to_soil_ptox_adapt_C_f100` chemical-holdout，5-seed anchor ensemble。
+  - 明确区分：chemical-holdout split 按 `cas_number` 分组隔离，不按 Tanimoto 阈值切分；Tanimoto 0.5 属于 AD audit 阈值，source weighting 的 Tanimoto 属于训练权重。
+  - 明确 taxonomy/context 不是整条 path 合并 embedding，而是 `latin_name/kingdom/phylum/class_name/tax_order/family/genus/species` 等字段各自 embedding 后拼接进入主干网络。
+- 新增已有最终指标汇总脚本：
+  - `scripts/build_final_mainline_summary.py`。
+  - 输出目录：`outputs/experiments/final_mainline_comparison`。
+  - 输出文件：
+    - `existing_final_overall_summary.csv`
+    - `existing_final_family_summary_30task.csv`
+    - `existing_final_task_summary_30task.csv`
+    - `existing_final_task_summary_35task.csv`
+    - `chemical_holdout_single_seed_summary.csv`
+    - `README.md`
+    - `manifest.json`
+  - `30task` 主表只含 ECx/LOEC/NOEC；`35task` 补充表保留 ICx/LDx。
+- 已补齐本地 `outputs/experiments/v1_2_11_f100_seed_stability_remote_summary/focus_summary.csv` 的远端小 CSV 副本，使 `chemical_holdout_single_seed_summary.csv` 包含 42/1042/2042/3042/4042 五个 seed。
+- 当前已有 final overall 指标：
+  - fixed chemical-holdout f100 5-seed ensemble：n=2594，R2=0.5388，RMSE=1.2368，MAE=0.9277，Huber=0.5563。
+  - random 8:2 3-seed ensemble：n=3165，R2=0.7775，RMSE=0.8676，MAE=0.6053，Huber=0.2955。
+  - random 5-fold 3-seed ensemble：n=15630，R2=0.7833，RMSE=0.8601，MAE=0.6019，Huber=0.2909。
+- 解释边界：
+  - fixed chemical-holdout f100 5-seed ensemble 是当前论文主线外推结果。
+  - random 8:2 / random 5-fold 仍是同分布插值参考，当前为 3-seed；后续按计划只需补跑 3042/4042 并刷新为 5-seed。
+  - 后续消融和单域 B/C/E 基线将在该方法文档和指标包基础上继续追加，不覆盖当前结果。
 
 ## 2026-06-26 v1.2.16 随机划分 3-seed ensemble 扩展完成
 

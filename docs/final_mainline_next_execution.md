@@ -1,0 +1,130 @@
+# Final Mainline Next Execution Notes
+
+更新时间：2026-06-27
+
+本文档记录在 `v1.2.17` 方法文档与已有指标汇总完成后的下一批执行入口。它不是结果报告；真正训练完成后仍需更新 `PROJECT_STATUS.md`、`docs/experiment_registry.csv` 和对应 summary 目录。
+
+## 1. 已完成的优先交付物
+
+- 方法文档：`docs/final_mainline_methods_materials.md`
+- 已有最终指标汇总脚本：`scripts/build_final_mainline_summary.py`
+- 已有最终指标包：`outputs/experiments/final_mainline_comparison`
+
+刷新已有指标包：
+
+```bash
+python scripts/build_final_mainline_summary.py
+```
+
+Windows 本地推荐解释器：
+
+```powershell
+E:\TOOLS\anaconda\envs\qsar-ph3\python.exe scripts\build_final_mainline_summary.py
+```
+
+## 2. 随机划分 5-seed refresh
+
+目标：把当前 random 8:2 和 random 5-fold 从 3-seed ensemble 扩展到 5-seed ensemble。
+
+已完成 seed：`42 1042 2042`
+
+只需补跑 seed：`3042 4042`
+
+远端命令：
+
+```bash
+cd /home/easyai/DL1/ecotox_qsar_transfer
+SEEDS="3042 4042" ENSEMBLE_SEEDS="42 1042 2042 3042 4042" \
+  bash scripts/run_v1_2_15_random_split_policy_remote.sh ensemble_all
+```
+
+完成后需要同步/检查：
+
+- `outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary/split_policy_ensemble_combined_summary.csv`
+- `outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary/split_policy_ensemble_family_summary.csv`
+- `outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary/split_policy_ensemble_main_task_summary.csv`
+- `outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary/split_policy_ensemble_task_summary.csv`
+
+然后重新运行：
+
+```powershell
+E:\TOOLS\anaconda\envs\qsar-ph3\python.exe scripts\build_final_mainline_summary.py
+```
+
+## 3. 主线 5-seed 消融
+
+目标：在固定 `M_v2_aquatic_to_soil_ptox_adapt_C_f100` 与主线参数下，解释最终模型性能来自哪些输入模块和训练策略。
+
+建议固定项：
+
+- source table：`aggregated_task_records_aquatic_soil_ptox_qc`
+- split：`M_v2_aquatic_to_soil_ptox_adapt_C_f100`
+- seeds：`42 1042 2042 3042 4042`
+- pretrain epochs：30
+- finetune epochs：60
+- finetune validation fraction：0.2
+- target standardization：`per_task_target`
+- batch size：512
+- pretrain LR：0.0005
+- finetune LR：0.0003082636455810776
+- scheduler：pretrain cosine，finetune reduce_on_plateau
+
+模块消融：
+
+- `no_fingerprint`
+- `no_descriptors`
+- `no_species_lifestage`
+- `no_duration`
+- `no_context`
+- `no_medium_adapter`
+- `no_molecular_residual`
+
+策略消融：
+
+- no source weighting：`--source-weighting-method none`
+- no toxicity binning：`--no-toxicity-binning`
+- no censored loss：`--no-censored-loss`
+
+建议新增版本化 launcher，而不是复用旧脚本覆盖：
+
+- `scripts/run_v1_2_18_mainline_ablation_remote.sh`
+- 输出根目录：`outputs/experiments/v1_2_18_mainline_ablation_remote`
+- 汇总目录：`outputs/experiments/v1_2_18_mainline_ablation_remote_summary`
+
+## 4. 水相-only 与土壤-only B/C/E 基线
+
+目标：证明当前深度框架在单独水相和单独土壤域内也有建模价值，再与迁移线比较。
+
+数据表：
+
+- aquatic-only：`aggregated_task_records_aquatic_ptox_qc`
+- soil-only：`aggregated_task_records_soil_ptox_qc`
+
+划分：
+
+- B：random 8:2
+- C：chemical-holdout 8:2
+- E：random 5-fold
+
+建议每个域跑 5-seed ensemble：
+
+- seeds：`42 1042 2042 3042 4042`
+- 模型：`full`
+- 训练参数尽量沿用主线框架；
+- 不启用 `tanimoto_to_finetune`，因为单域基线没有 aquatic source -> soil finetune 的迁移权重定义。
+
+建议新增版本化 launcher：
+
+- `scripts/run_v1_2_19_single_domain_bce_remote.sh`
+- 输出根目录：`outputs/experiments/v1_2_19_single_domain_bce_remote`
+- 汇总目录：`outputs/experiments/v1_2_19_single_domain_bce_remote_summary`
+
+## 5. 完成判据
+
+每一批实验完成后至少检查：
+
+- 所有 run 的 `manifest.json`、`metrics.csv`、`predictions.csv`、`history.csv` 存在；
+- `audit_summary.csv` 或等价完整性检查无缺失；
+- chemical-holdout / chemical-group split 中 CAS train/test overlap 为 0；
+- summary 表同时输出 overall、family、30-task 和 35-task；
+- `PROJECT_STATUS.md` 与 `docs/experiment_registry.csv` 更新。
