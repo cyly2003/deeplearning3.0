@@ -1,6 +1,28 @@
 # Project Status
 
-更新时间：2026-06-27 16:05 (+08:00)
+更新时间：2026-06-28 00:00 (+08:00)
+
+## 2026-06-28 random 5-seed refresh 完成并进入主线消融
+
+- random split 5-seed refresh 已完成：
+  - 远端完成判据：`complete=12 missing=0 expected=12`，`summary-seeds five_seed_ready`。
+  - 结束日志：`outputs/logs/run_v1_2_15_random_split_policy_5seed_refresh_20260627_154528.log`，最后一个 run `random5fold_fold5_seed4042` 于 2026-06-27 22:53 完成，整体 `ensemble_all` 于 2026-06-27 23:01 status=0。
+  - 5-seed random 8:2：n=3165，R2=0.7853，RMSE=0.8521，MAE=0.5925，Huber=0.2858。
+  - 5-seed random 5-fold：n=15630，R2=0.7878，RMSE=0.8512，MAE=0.5939，Huber=0.2852。
+- 本地最终指标包已刷新：
+  - `outputs/experiments/final_mainline_comparison/existing_final_overall_summary.csv`
+  - `outputs/experiments/final_mainline_comparison/existing_final_family_summary_30task.csv`
+  - `outputs/experiments/final_mainline_comparison/existing_final_task_summary_30task.csv`
+  - `outputs/experiments/final_mainline_comparison/existing_final_task_summary_35task.csv`
+  - random 行已由 `random_*_3seed` 更新为 `random_*_5seed`。
+- follow-up 队列已自动进入 v1.2.18 主线消融：
+  - 已完成：`ablation_no_fingerprint_seed42_cebin_lw0025_censored_w0p01`，run-done status=0。
+  - 正在运行：`ablation_no_descriptors_seed42_cebin_lw0025_censored_w0p01`。
+  - v1.2.19 单域 B/C/E 仍在队列后段，等待 v1.2.18 矩阵完成。
+- 本地验证：
+  - `E:\TOOLS\anaconda\envs\qsar-ph3\python.exe scripts\build_final_mainline_summary.py`
+  - `E:\TOOLS\anaconda\envs\qsar-ph3\python.exe -m pytest tests\test_build_final_mainline_summary.py tests\test_summarize_split_policy_ensembles.py -q`
+  - 结果：2 passed。
 
 ## 2026-06-27 v1.2.18/v1.2.19 后续矩阵入口准备与主线训练空间导出
 

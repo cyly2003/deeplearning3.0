@@ -179,10 +179,10 @@ Morgan fingerprint 半径为 2，位数为 512。指纹用于模型输入，也�
   - LOEC：n=1,027，R2=0.5484，RMSE=1.2721，MAE=0.9591；
   - NOEC：n=1,057，R2=0.4877，RMSE=1.2850，MAE=0.9628。
 
-随机 8:2 与随机 5-fold 当前为 3-seed ensemble 同分布参考，尚待补跑 `3042/4042` 后刷新为 5-seed：
+随机 8:2 与随机 5-fold 已补齐为 5-seed ensemble 同分布参考：
 
-- random 8:2 3-seed：n=3,165，R2=0.7775，RMSE=0.8676，MAE=0.6053；
-- random 5-fold 3-seed：n=15,630，R2=0.7833，RMSE=0.8601，MAE=0.6019。
+- random 8:2 5-seed：n=3,165，R2=0.7853，RMSE=0.8521，MAE=0.5925，Huber=0.2858；
+- random 5-fold 5-seed：n=15,630，R2=0.7878，RMSE=0.8512，MAE=0.5939，Huber=0.2852。
 
 这些随机划分结果用于说明同分布插值上限，不替代 fixed chemical-holdout 主线。
 
@@ -190,9 +190,9 @@ Morgan fingerprint 半径为 2，位数为 512。指纹用于模型输入，也�
 
 为支撑论文完整性，后续需要补齐三类实验：
 
-1. 随机划分 5-seed refresh：在现有 `42/1042/2042` 基础上只补 `3042/4042`，然后用相同 ensemble 汇总脚本刷新随机 8:2 与 random 5-fold。
-2. 主线 5-seed 消融：固定 `M_v2_aquatic_to_soil_ptox_adapt_C_f100`，对输入模块与训练策略进行 5-seed 全消融。
-3. 单域基线：使用同一深度框架分别训练 aquatic-only 与 soil-only 的 B/C/E split，证明框架在水相与土壤域内均有建模价值，并与迁移线进行横向比较。
+1. 主线 5-seed 消融：固定 `M_v2_aquatic_to_soil_ptox_adapt_C_f100`，对输入模块与训练策略进行 5-seed 全消融。
+2. 单域基线：使用同一深度框架分别训练 aquatic-only 与 soil-only 的 B/C/E split，证明框架在水相与土壤域内均有建模价值，并与迁移线进行横向比较。
+3. 应用域分析：结合化合物结构相似度、taxonomy 层级相似度与误差分层，构建面向化合物-物种-任务联合空间的可靠性判别方法。
 
 上述实验应继续写入 `PROJECT_STATUS.md`、`docs/experiment_registry.csv` 和对应 summary 目录，避免结果只保存在对话记录中。
 

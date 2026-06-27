@@ -122,12 +122,8 @@ def load_chemical_overall(chemical_dir: Path) -> pd.DataFrame:
 
 def load_random_overall(random_dir: Path) -> pd.DataFrame:
     frame = pd.read_csv(random_dir / "split_policy_ensemble_combined_summary.csv").copy()
-    frame["evaluation_policy"] = frame["split_policy"].map(
-        {
-            "random_8_2": "random_8_2_3seed",
-            "random_5fold": "random_5fold_3seed",
-        }
-    ).fillna(frame["split_policy"])
+    frame["ensemble_seed_count"] = frame["seeds"].astype(str).apply(seed_count)
+    frame["evaluation_policy"] = random_evaluation_policy(frame)
     frame["split_strategy"] = frame["split_policy"]
     frame["split_name"] = frame["split_policy"].map(
         {
@@ -135,9 +131,8 @@ def load_random_overall(random_dir: Path) -> pd.DataFrame:
             "random_5fold": "M_v2_aquatic_to_soil_ptox_adapt_E_random_5fold_fold1-5_f100",
         }
     ).fillna("")
-    frame["ensemble_seed_count"] = frame["seeds"].astype(str).apply(lambda value: len([x for x in value.split(";") if x]))
     frame["task_scope"] = "ECx_LOEC_NOEC_30task"
-    frame["source_result"] = "v1.2.16_random_split_3seed"
+    frame["source_result"] = random_source_result(frame)
     return select_overall_columns(frame)
 
 
@@ -155,15 +150,10 @@ def load_chemical_family(chemical_dir: Path) -> pd.DataFrame:
 
 def load_random_family(random_dir: Path) -> pd.DataFrame:
     frame = pd.read_csv(random_dir / "split_policy_ensemble_family_summary.csv").copy()
-    frame["evaluation_policy"] = frame["split_policy"].map(
-        {
-            "random_8_2": "random_8_2_3seed",
-            "random_5fold": "random_5fold_3seed",
-        }
-    ).fillna(frame["split_policy"])
+    frame["ensemble_seed_count"] = frame["seeds"].astype(str).apply(seed_count)
+    frame["evaluation_policy"] = random_evaluation_policy(frame)
     frame["split_strategy"] = frame["split_policy"]
-    frame["ensemble_seed_count"] = frame["seeds"].astype(str).apply(lambda value: len([x for x in value.split(";") if x]))
-    frame["source_result"] = "v1.2.16_random_split_3seed"
+    frame["source_result"] = random_source_result(frame)
     return select_family_columns(frame)
 
 
@@ -182,16 +172,29 @@ def load_chemical_task(chemical_dir: Path) -> pd.DataFrame:
 def load_random_task(random_dir: Path, *, main_only: bool) -> pd.DataFrame:
     filename = "split_policy_ensemble_main_task_summary.csv" if main_only else "split_policy_ensemble_task_summary.csv"
     frame = pd.read_csv(random_dir / filename).copy()
-    frame["evaluation_policy"] = frame["split_policy"].map(
+    frame["ensemble_seed_count"] = frame["seeds"].astype(str).apply(seed_count)
+    frame["evaluation_policy"] = random_evaluation_policy(frame)
+    frame["split_strategy"] = frame["split_policy"]
+    frame["source_result"] = random_source_result(frame)
+    return select_task_columns(frame)
+
+
+def seed_count(value: str) -> int:
+    return len([seed for seed in str(value).split(";") if seed])
+
+
+def random_evaluation_policy(frame: pd.DataFrame) -> pd.Series:
+    base = frame["split_policy"].map(
         {
-            "random_8_2": "random_8_2_3seed",
-            "random_5fold": "random_5fold_3seed",
+            "random_8_2": "random_8_2",
+            "random_5fold": "random_5fold",
         }
     ).fillna(frame["split_policy"])
-    frame["split_strategy"] = frame["split_policy"]
-    frame["ensemble_seed_count"] = frame["seeds"].astype(str).apply(lambda value: len([x for x in value.split(";") if x]))
-    frame["source_result"] = "v1.2.16_random_split_3seed"
-    return select_task_columns(frame)
+    return base.astype(str) + "_" + frame["ensemble_seed_count"].astype(str) + "seed"
+
+
+def random_source_result(frame: pd.DataFrame) -> pd.Series:
+    return "v1.2.16_random_split_" + frame["ensemble_seed_count"].astype(str) + "seed"
 
 
 def load_optional_single_seed_summary() -> pd.DataFrame | None:
@@ -330,7 +333,7 @@ def build_readme(
             "## Interpretation Boundary",
             "",
             "- `chemical_holdout_f100_5seed` is the current mainline external-generalization result.",
-            "- `random_8_2_3seed` and `random_5fold_3seed` are same-distribution/interpolation references and are pending 5-seed refresh.",
+            "- Random split rows are same-distribution/interpolation references; the seed count is encoded in each `evaluation_policy` label.",
             "- Ensemble metrics are computed by averaging aligned prediction rows across seeds; they should be reported separately from single-model mean +/- SD.",
             "",
             "## Current Overall Metrics",

@@ -18,7 +18,7 @@ This directory harmonizes the existing final result tables for the current QSAR 
 ## Interpretation Boundary
 
 - `chemical_holdout_f100_5seed` is the current mainline external-generalization result.
-- `random_8_2_3seed` and `random_5fold_3seed` are same-distribution/interpolation references and are pending 5-seed refresh.
+- Random split rows are same-distribution/interpolation references; the seed count is encoded in each `evaluation_policy` label.
 - Ensemble metrics are computed by averaging aligned prediction rows across seeds; they should be reported separately from single-model mean +/- SD.
 
 ## Current Overall Metrics
@@ -26,8 +26,8 @@ This directory harmonizes the existing final result tables for the current QSAR 
 | evaluation_policy           | n     | r2     | rmse   | mae    | huber_loss | ensemble_seed_count |
 | --------------------------- | ----- | ------ | ------ | ------ | ---------- | ------------------- |
 | chemical_holdout_f100_5seed | 2594  | 0.5388 | 1.2368 | 0.9277 | 0.5563     | 5                   |
-| random_5fold_3seed          | 15630 | 0.7833 | 0.8601 | 0.6019 | 0.2909     | 3                   |
-| random_8_2_3seed            | 3165  | 0.7775 | 0.8676 | 0.6053 | 0.2955     | 3                   |
+| random_5fold_5seed          | 15630 | 0.7878 | 0.8512 | 0.5939 | 0.2852     | 5                   |
+| random_8_2_5seed            | 3165  | 0.7853 | 0.8521 | 0.5925 | 0.2858     | 5                   |
 
 ## Main Task Count
 

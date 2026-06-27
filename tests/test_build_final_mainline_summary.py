@@ -138,5 +138,5 @@ def test_build_summary_tables_outputs_main_and_full_task_scopes(tmp_path, monkey
 
     assert set(task_main["task_family"]) == {"ECx"}
     assert set(task_all["task_family"]) == {"ECx", "ICx", "LDx"}
-    assert set(overall["evaluation_policy"]) == {"chemical_holdout_f100_5seed", "random_8_2_3seed"}
-    assert int(overall.loc[overall["evaluation_policy"].eq("random_8_2_3seed"), "ensemble_seed_count"].iloc[0]) == 2
+    assert set(overall["evaluation_policy"]) == {"chemical_holdout_f100_5seed", "random_8_2_2seed"}
+    assert int(overall.loc[overall["evaluation_policy"].eq("random_8_2_2seed"), "ensemble_seed_count"].iloc[0]) == 2

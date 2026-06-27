@@ -42,7 +42,7 @@ SEEDS="3042 4042" ENSEMBLE_SEEDS="42 1042 2042 3042 4042" \
 
 - 已在远端后台启动，日志为 `outputs/logs/run_v1_2_15_random_split_policy_5seed_refresh_20260627_154528.log`。
 - 2026-06-27 16:22 核验：第一项 `random8_2_seed3042` 已完成并落盘，脚本已自动进入 `random5fold_fold1_seed3042`。
-- 完成全部 12 个新增训练后会自动重建 summary 和 5-seed ensemble 表。
+- 2026-06-27 23:01 核验：全部 12 个新增训练完成，summary 已刷新为 5-seed ensemble。
 
 本地只读状态检查：
 
@@ -54,14 +54,14 @@ pwsh .\scripts\check_v1_2_15_random_refresh.ps1 `
 
 判定标准：`[refresh-completion] complete=12 missing=0 expected=12` 且 `[summary-seeds] five_seed_ready` 同时出现。
 
-完成后需要同步/检查：
+已同步/检查：
 
 - `outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary/split_policy_ensemble_combined_summary.csv`
 - `outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary/split_policy_ensemble_family_summary.csv`
 - `outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary/split_policy_ensemble_main_task_summary.csv`
 - `outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary/split_policy_ensemble_task_summary.csv`
 
-然后重新运行：
+已重新运行：
 
 ```powershell
 E:\TOOLS\anaconda\envs\qsar-ph3\python.exe scripts\build_final_mainline_summary.py
@@ -146,7 +146,7 @@ cd /home/easyai/DL1/ecotox_qsar_transfer
 bash scripts/run_v1_2_18_mainline_ablation_remote.sh matrix
 ```
 
-当前状态：脚本已同步远端并通过 `bash -n`，但完整矩阵尚未启动，建议等待 random 5-seed refresh 完成。
+当前状态：random 5-seed refresh 完成后，follow-up 队列已自动启动完整矩阵；`no_fingerprint_seed42` 已完成，当前进入 `no_descriptors_seed42`。
 
 如果希望在 random refresh 达到完成判据后自动接上消融和单域矩阵，可在远端后台启动：
 
@@ -164,7 +164,8 @@ echo $! > "$pidfile"
 
 - log：`outputs/logs/run_v1_2_20_followup_queue_20260627_163936.log`
 - pidfile：`outputs/logs/run_v1_2_20_followup_queue_20260627_163936.pid`
-- 初始状态：`complete=1 missing=11 expected=12`，队列正在等待 random refresh 完成。
+- 初始状态：`complete=1 missing=11 expected=12`。
+- 当前状态：random refresh 已完成，队列已进入 v1.2.18 消融矩阵。
 
 ## 5. 水相-only 与土壤-only B/C/E 基线
 
@@ -209,7 +210,7 @@ cd /home/easyai/DL1/ecotox_qsar_transfer
 bash scripts/run_v1_2_19_single_domain_bce_remote.sh matrix
 ```
 
-当前状态：脚本已同步远端并通过 `bash -n`，但完整矩阵尚未启动，建议等待 random 5-seed refresh 完成。
+当前状态：脚本已同步远端并通过 `bash -n`；尚未启动完整矩阵，排在 v1.2.18 消融矩阵之后。
 
 ## 6. 完成判据
 
