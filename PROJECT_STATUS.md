@@ -8,7 +8,7 @@
 - random split 5-seed refresh：
   - 远端已启动：`SEEDS="3042 4042" ENSEMBLE_SEEDS="42 1042 2042 3042 4042" bash scripts/run_v1_2_15_random_split_policy_remote.sh ensemble_all`。
   - 当前日志：`outputs/logs/run_v1_2_15_random_split_policy_5seed_refresh_20260627_154528.log`。
-  - 启动后核验：真实训练进程为 `seed3042 random8_2`，日志已进入 epoch；实际 GPU 进程只有一个训练进程。
+  - 2026-06-27 16:22：`seed3042 random8_2` 已完成并落盘，`run-done status=0`，duration=2213s；脚本已自动进入 `seed3042 random5fold fold1`。
   - 新增只读状态检查入口：`scripts/check_v1_2_15_random_refresh.ps1`；完成判据为 `complete=12 missing=0 expected=12` 且 summary seeds 为 `42;1042;2042;3042;4042`。
   - 完成后需要同步 `outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary`，再重跑 `scripts/build_final_mainline_summary.py` 刷新 random 5-seed 汇总。
 - 新增训练空间导出脚本：

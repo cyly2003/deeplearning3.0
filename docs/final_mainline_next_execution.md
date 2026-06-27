@@ -41,7 +41,8 @@ SEEDS="3042 4042" ENSEMBLE_SEEDS="42 1042 2042 3042 4042" \
 当前状态：
 
 - 已在远端后台启动，日志为 `outputs/logs/run_v1_2_15_random_split_policy_5seed_refresh_20260627_154528.log`。
-- 当前第一项为 `random8_2_seed3042`；完成全部 12 个新增训练后会自动重建 summary 和 5-seed ensemble 表。
+- 2026-06-27 16:22 核验：第一项 `random8_2_seed3042` 已完成并落盘，脚本已自动进入 `random5fold_fold1_seed3042`。
+- 完成全部 12 个新增训练后会自动重建 summary 和 5-seed ensemble 表。
 
 本地只读状态检查：
 
