@@ -43,6 +43,16 @@ SEEDS="3042 4042" ENSEMBLE_SEEDS="42 1042 2042 3042 4042" \
 - 已在远端后台启动，日志为 `outputs/logs/run_v1_2_15_random_split_policy_5seed_refresh_20260627_154528.log`。
 - 当前第一项为 `random8_2_seed3042`；完成全部 12 个新增训练后会自动重建 summary 和 5-seed ensemble 表。
 
+本地只读状态检查：
+
+```powershell
+pwsh .\scripts\check_v1_2_15_random_refresh.ps1 `
+  -Config configs\experiment.remote.easyai.yaml `
+  -LocalPython E:\TOOLS\anaconda\envs\qsar-ph3\python.exe
+```
+
+判定标准：`[refresh-completion] complete=12 missing=0 expected=12` 且 `[summary-seeds] five_seed_ready` 同时出现。
+
 完成后需要同步/检查：
 
 - `outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary/split_policy_ensemble_combined_summary.csv`
