@@ -1,6 +1,23 @@
 # Project Status
 
-更新时间：2026-06-28 00:00 (+08:00)
+更新时间：2026-06-30 16:55 (+08:00)
+
+## 2026-06-30 运行时间汇总与 v1.2.21 随机划分消融启动
+
+- 已新增运行时间汇总文档：`docs/runtime_summary_20260630.md`。
+- 已汇总远端 `run_times.csv`：
+  - v1.2.15 random transfer：32 runs，总耗时 17.31 h，平均 32.45 min/run。
+  - v1.2.18 fixed C ablation：50 runs，总耗时 26.50 h，平均 31.80 min/run。
+  - v1.2.19 single-domain BCE：70 runs，总耗时 20.03 h；aquatic 平均约 31-33 min/run，soil 平均约 1.6-1.8 min/run。
+- v1.2.18 与 v1.2.19 已完成：
+  - v1.2.18：50/50 run 完成。
+  - v1.2.19：70/70 run 完成；远端队列已结束。
+- 已新增随机划分 targeted 消融 launcher：`scripts/run_v1_2_21_random_split_ablation_remote.sh`。
+  - random 8:2：五个 seed。
+  - random 5-fold：先跑 seed42 的 fold1-5。
+  - targeted 消融：`no_context/no_species_lifestage/no_molecular_residual` 与 `no_source_weighting/no_toxicity_binning/no_censored_loss`。
+  - 2026-06-30 16:55 已在远端启动 priority 矩阵；log 为 `outputs/logs/run_v1_2_21_random_split_ablation_priority_20260630_165543.log`。
+  - 当前首个正式 run：`random8_2_ablation_no_context_seed42_cebin_lw0025_censored_w0p01`。
 
 ## 2026-06-28 random 5-seed refresh 完成并进入主线消融
 
