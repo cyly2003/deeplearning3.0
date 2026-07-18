@@ -26,10 +26,11 @@ $soilPtoxTable = "aggregated_task_records_soil_ptox_qc"
 $soilMgkgTable = "aggregated_task_records_soil_mg_kg_qc"
 $outRoot = "outputs\experiments\v1_2_39_ptox_to_soil_mgkg_3stage_local"
 $summaryOut = "outputs\experiments\v1_2_39_ptox_to_soil_mgkg_3stage_local_summary"
+$auditDir = "outputs\audits\v1_2_39_ptox_to_soil_mgkg"
 $logDir = "outputs\logs"
 $runTimes = Join-Path $logDir "run_v1_2_39_ptox_to_soil_mgkg_3stage_local_times.csv"
 $runVersion = "v1.2.39"
-$protocolTag = "protocolfix"
+$protocolTag = "protocolfix_routingfix"
 $splitPrefix = "M_v1_2_39_ptox_to_soil_mgkg_"
 $random8Split = "${splitPrefix}B_random_8_2"
 
@@ -106,7 +107,7 @@ function Assert-Python {
 }
 
 function Initialize-Outputs {
-    New-Item -ItemType Directory -Force -Path $outRoot, $summaryOut, $logDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $outRoot, $summaryOut, $auditDir, $logDir | Out-Null
     if (-not (Test-Path $runTimes)) {
         "kind,run_name,ablation,split_name,start_iso,end_iso,duration_seconds,exit_code" | Set-Content -Encoding UTF8 $runTimes
     }
@@ -193,6 +194,7 @@ function Invoke-SplitBuild {
         [string]$SoilPtoxSplit,
         [string]$SoilMgkgSplit
     )
+    $routingAudit = Join-Path $auditDir "${TransferSplit}_routing_audit.csv"
     & $Python scripts\build_three_stage_ptox_to_soil_mgkg_split.py `
         --db $db `
         --source-table $sourceTable `
@@ -201,14 +203,48 @@ function Invoke-SplitBuild {
         --soil-mgkg-source-table $soilMgkgTable `
         --soil-mgkg-split-name $SoilMgkgSplit `
         --split-name $TransferSplit `
+        --audit-csv $routingAudit `
         --seed 42
     if ($LASTEXITCODE -ne 0) {
         throw "Three-stage split creation failed: $TransferSplit"
     }
+    Assert-RoutingAudit -TransferSplit $TransferSplit
+}
+
+function Assert-RoutingAudit {
+    param([string]$TransferSplit)
+    $routingAudit = Join-Path $auditDir "${TransferSplit}_routing_audit.csv"
+    if (-not (Test-Path $routingAudit)) {
+        throw "Routing audit is missing for split: $TransferSplit"
+    }
+    $rows = @(Import-Csv $routingAudit)
+    if ($rows.Count -ne 1) {
+        throw "Routing audit must contain exactly one data row: $routingAudit"
+    }
+    $audit = $rows[0]
+    if ($audit.routing_rule -ne "exact_aggregate_or_raw_result_v1") {
+        throw "Routing audit rule mismatch for split: $TransferSplit"
+    }
+    if (
+        [int]$audit.residual_aggregate_id_overlap -ne 0 -or
+        [int]$audit.residual_result_id_overlap -ne 0
+    ) {
+        throw "Routing audit contains residual stage-1/soil-pTox overlap: $routingAudit"
+    }
+    if (
+        [int]$audit.aquatic_ptox_stage1_after + [int]$audit.aquatic_ptox_excluded_total -ne
+        [int]$audit.aquatic_ptox_candidates_before
+    ) {
+        throw "Routing audit candidate accounting mismatch: $routingAudit"
+    }
+}
+
+function Invoke-Random8Split {
+    Invoke-SplitBuild -TransferSplit $random8Split -SoilPtoxSplit "SoilPtoxQC2_B_random_8_2" -SoilMgkgSplit "SoilMgkgQC2_B_random_8_2"
 }
 
 function Invoke-Splits {
-    Invoke-SplitBuild -TransferSplit $random8Split -SoilPtoxSplit "SoilPtoxQC2_B_random_8_2" -SoilMgkgSplit "SoilMgkgQC2_B_random_8_2"
+    Invoke-Random8Split
     if ($RunFull5Fold) {
         foreach ($fold in $Folds) {
             Invoke-SplitBuild -TransferSplit (Get-FoldSplit -Fold $fold) -SoilPtoxSplit (Get-SoilPtoxFoldSplit -Fold $fold) -SoilMgkgSplit (Get-SoilMgkgFoldSplit -Fold $fold)
@@ -230,6 +266,7 @@ function Invoke-TrainOne {
     )
     # Keep repaired runs separate from earlier local outputs whose stage-1
     # model selection and split contracts were invalid.
+    Assert-RoutingAudit -TransferSplit $SplitName
     $runName = "three_stage_${protocolTag}_${Label}_seed$Seed"
     if (Test-RunExists -RunName $runName -Ablation $Ablation -SplitName $SplitName) {
         Write-Host "[skip-existing] $runName $Ablation $SplitName"
@@ -301,6 +338,7 @@ function Assert-ShapAvailable {
 }
 
 function Invoke-Explanation {
+    Assert-RoutingAudit -TransferSplit $random8Split
     Assert-ShapAvailable
     $runName = "three_stage_${protocolTag}_full_no_adapter_random8_2_seed$($Seeds[0])"
     $modelDir = Get-RunDirectory -RunName $runName -Ablation "full" -SplitName $random8Split
@@ -333,6 +371,7 @@ function Invoke-Explanation {
 }
 
 function Invoke-Summary {
+    Assert-RoutingAudit -TransferSplit $random8Split
     & $Python scripts\summarize_deep_runs.py `
         --root $outRoot `
         --out-dir $summaryOut `
@@ -356,12 +395,18 @@ Write-Host "[contract] adapters disabled; pTox head shared across aquatic/soil; 
 
 switch ($Mode) {
     "splits" { Invoke-Splits }
-    "main" { Invoke-MainRuns }
-    "ablations" { Invoke-AblationRuns }
+    "main" {
+        Invoke-Splits
+        Invoke-MainRuns
+    }
+    "ablations" {
+        Invoke-Random8Split
+        Invoke-AblationRuns
+    }
     "explain" { Invoke-Explanation }
     "summarize" { Invoke-Summary }
     "smoke" {
-        Invoke-Splits
+        Invoke-Random8Split
         Invoke-TrainOne -Kind "smoke" -Label "smoke_full_no_adapter" -Ablation "full" -SplitName $random8Split -Seed $Seeds[0] -Stage1Epochs $SmokeEpochs -Stage2Epochs $SmokeEpochs -Stage3Epochs $SmokeEpochs
     }
     "all" {

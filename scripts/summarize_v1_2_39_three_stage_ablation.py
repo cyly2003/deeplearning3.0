@@ -19,7 +19,7 @@ import numpy as np
 
 
 VERSION = "v1.2.39"
-RUN_NAME_PREFIX = "three_stage_protocolfix_"
+RUN_NAME_PREFIX = "three_stage_protocolfix_routingfix_"
 RANDOM8_SPLIT = "M_v1_2_39_ptox_to_soil_mgkg_B_random_8_2"
 VARIANTS = (
     {

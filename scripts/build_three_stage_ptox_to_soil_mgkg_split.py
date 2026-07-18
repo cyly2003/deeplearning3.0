@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import sqlite3
@@ -30,6 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--soil-mgkg-split-name", default="SoilMgkgQC2_B_random_8_2")
     parser.add_argument("--split-name", default="M_v1_2_39_ptox_to_soil_mgkg_B_random_8_2")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--audit-csv",
+        type=Path,
+        help="Optional one-row CSV recording the exact stage-1/source-overlap routing audit.",
+    )
     return parser
 
 
@@ -44,6 +50,7 @@ def main() -> None:
         soil_mgkg_split_name=args.soil_mgkg_split_name,
         split_name=args.split_name,
         seed=args.seed,
+        audit_csv=args.audit_csv,
     )
     print(summary)
 
@@ -58,12 +65,16 @@ def build_three_stage_split(
     soil_mgkg_split_name: str,
     split_name: str,
     seed: int = 42,
+    audit_csv: Path | None = None,
 ) -> dict[str, int]:
     """Create one split where each stage has a non-overlapping training role.
 
-    Stage 1 contains aquatic pTox only. Stage 2 contains only the training part
-    of the existing soil pTox split. Stage 3 contains only the training part of
-    the existing soil mg/kg split; its test rows are the sole external test set.
+    Stage 1 contains aquatic-only pTox records. Any aquatic record sharing an
+    aggregate identity or raw result source with any soil-pTox candidate is
+    removed from stage 1, regardless of whether that soil row later belongs to
+    the stage-2 train or test part. Stage 2 contains only the training part of
+    the existing soil pTox split. Stage 3 contains only the training part of the
+    existing soil mg/kg split; its test rows are the sole external test set.
     """
     with closing(sqlite3.connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -96,6 +107,13 @@ def build_three_stage_split(
         )
         if not aquatic_ptox_rows or not soil_ptox_rows or not soil_mgkg_rows:
             raise ValueError("The three-stage source table is missing one or more required target domains.")
+
+        aquatic_ptox_rows, routing_audit = route_aquatic_ptox_stage1(
+            aquatic_rows=aquatic_ptox_rows,
+            soil_ptox_rows=soil_ptox_rows,
+        )
+        if not aquatic_ptox_rows:
+            raise ValueError("Exact source routing removed every aquatic pTox stage-1 candidate.")
 
         soil_ptox_parts = split_parts(conn, soil_ptox_split_name, soil_ptox_source_table)
         soil_mgkg_parts = split_parts(conn, soil_mgkg_split_name, soil_mgkg_source_table)
@@ -207,6 +225,13 @@ def build_three_stage_split(
                 f"expected={len(assignments)}, inserted={int(inserted_count)}"
             )
         conn.commit()
+        if audit_csv is not None:
+            write_routing_audit(
+                audit_csv,
+                split_name=split_name,
+                source_table=source_table,
+                audit=routing_audit,
+            )
         return split_summary(conn, split_name, source_table)
 
 
@@ -220,7 +245,7 @@ def source_rows(
 ) -> list[sqlite3.Row]:
     rows = conn.execute(
         f'''
-        SELECT aggregate_id, medium_domain, target_name, target_family
+        SELECT aggregate_id, medium_domain, target_name, target_family, result_ids
         FROM "{table_name}"
         WHERE medium_domain = ? AND target_name = ?
         ORDER BY aggregate_id
@@ -253,6 +278,138 @@ def source_rows(
             f"each stage sample must resolve to exactly one row ({len(duplicate_identities)} duplicates): {preview}"
         )
     return rows
+
+
+def parse_result_ids(value: object) -> frozenset[str]:
+    """Parse the source-result identity list without widening the exclusion key."""
+    if value is None or not str(value).strip():
+        return frozenset()
+    try:
+        parsed = json.loads(str(value))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"result_ids is not valid JSON: {value!r}") from exc
+    if not isinstance(parsed, list):
+        raise ValueError(f"result_ids must be a JSON array: {value!r}")
+    normalized: set[str] = set()
+    for item in parsed:
+        if isinstance(item, (dict, list)) or item is None or not str(item).strip():
+            raise ValueError(f"result_ids contains an invalid source identity: {value!r}")
+        normalized.add(str(item).strip())
+    return frozenset(normalized)
+
+
+def route_aquatic_ptox_stage1(
+    *,
+    aquatic_rows: list[sqlite3.Row],
+    soil_ptox_rows: list[sqlite3.Row],
+) -> tuple[list[sqlite3.Row], dict[str, int | str]]:
+    """Give all exact aquatic/soil source collisions exclusively to stage 2.
+
+    The exclusion keys are intentionally narrow: exact ``aggregate_id`` and
+    exact raw ``result_ids`` only. CAS, test ID, reference, organism, endpoint,
+    and similar experimental context are not used as group-level exclusions.
+    """
+    soil_aggregate_ids = {str(row["aggregate_id"]) for row in soil_ptox_rows}
+    soil_result_ids = collect_result_ids(soil_ptox_rows)
+    aquatic_aggregate_ids = {str(row["aggregate_id"]) for row in aquatic_rows}
+    aquatic_result_ids = collect_result_ids(aquatic_rows)
+
+    routed_rows: list[sqlite3.Row] = []
+    excluded_rows: list[sqlite3.Row] = []
+    same_aggregate_only = 0
+    shared_result_only = 0
+    both = 0
+    for row in aquatic_rows:
+        same_aggregate = str(row["aggregate_id"]) in soil_aggregate_ids
+        shared_result = bool(parse_result_ids(row["result_ids"]) & soil_result_ids)
+        if same_aggregate and shared_result:
+            both += 1
+            excluded_rows.append(row)
+        elif same_aggregate:
+            same_aggregate_only += 1
+            excluded_rows.append(row)
+        elif shared_result:
+            shared_result_only += 1
+            excluded_rows.append(row)
+        else:
+            routed_rows.append(row)
+
+    excluded_total = same_aggregate_only + shared_result_only + both
+    soil_rows_overlapping_aquatic = sum(
+        1
+        for row in soil_ptox_rows
+        if str(row["aggregate_id"]) in aquatic_aggregate_ids
+        or bool(parse_result_ids(row["result_ids"]) & aquatic_result_ids)
+    )
+    routed_aggregate_ids = {str(row["aggregate_id"]) for row in routed_rows}
+    routed_result_ids = collect_result_ids(routed_rows)
+    residual_aggregate_overlap = routed_aggregate_ids & soil_aggregate_ids
+    residual_result_overlap = routed_result_ids & soil_result_ids
+    if residual_aggregate_overlap or residual_result_overlap:
+        raise ValueError(
+            "Exact source routing failed to isolate aquatic stage 1 from all soil-pTox candidates: "
+            f"aggregate_overlap={len(residual_aggregate_overlap)}, "
+            f"result_id_overlap={len(residual_result_overlap)}"
+        )
+
+    return routed_rows, {
+        "routing_rule": "exact_aggregate_or_raw_result_v1",
+        "aquatic_ptox_candidates_before": len(aquatic_rows),
+        "soil_ptox_candidates": len(soil_ptox_rows),
+        "soil_ptox_candidates_overlapping_aquatic_before": soil_rows_overlapping_aquatic,
+        "aquatic_ptox_excluded_total": excluded_total,
+        "aquatic_ptox_excluded_same_aggregate_only": same_aggregate_only,
+        "aquatic_ptox_excluded_shared_result_only": shared_result_only,
+        "aquatic_ptox_excluded_both": both,
+        "aquatic_ptox_stage1_after": len(routed_rows),
+        "residual_aggregate_id_overlap": len(residual_aggregate_overlap),
+        "residual_result_id_overlap": len(residual_result_overlap),
+        "aquatic_ptox_excluded_identity_sha256": hash_source_rows(excluded_rows),
+        "aquatic_ptox_stage1_identity_sha256": hash_source_rows(routed_rows),
+        "soil_ptox_candidates_identity_sha256": hash_source_rows(soil_ptox_rows),
+    }
+
+
+def collect_result_ids(rows: list[sqlite3.Row]) -> set[str]:
+    result_ids: set[str] = set()
+    for row in rows:
+        result_ids.update(parse_result_ids(row["result_ids"]))
+    return result_ids
+
+
+def hash_source_rows(rows: list[sqlite3.Row]) -> str:
+    digest = hashlib.sha256()
+    identities = sorted(
+        json.dumps(
+            [str(row["aggregate_id"]), sorted(parse_result_ids(row["result_ids"]))],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        for row in rows
+    )
+    for identity in identities:
+        digest.update(identity.encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def write_routing_audit(
+    path: Path,
+    *,
+    split_name: str,
+    source_table: str,
+    audit: dict[str, int | str],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row: dict[str, str | int] = {
+        "split_name": split_name,
+        "source_table": source_table,
+        **audit,
+    }
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(row))
+        writer.writeheader()
+        writer.writerow(row)
 
 
 def row_aggregate_ids(rows: list[sqlite3.Row]) -> list[str]:

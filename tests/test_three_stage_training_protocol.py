@@ -67,5 +67,10 @@ def test_v139_runner_uses_stage_local_validation_and_no_censored_ablation() -> N
     assert '"--censored-loss",' not in runner
     assert "M5_no_censored_loss" not in runner
     assert "M5_no_censored_loss" not in summary
-    assert "three_stage_protocolfix_" in summary
-    assert '"protocolfix"' in runner
+    assert "three_stage_protocolfix_routingfix_" in summary
+    assert '"protocolfix_routingfix"' in runner
+    assert "--audit-csv" in runner
+    assert "routing_audit.csv" in runner
+    assert "Assert-RoutingAudit -TransferSplit $SplitName" in runner
+    assert '"main" {' in runner and "Invoke-Splits" in runner
+    assert '"ablations" {' in runner and "Invoke-Random8Split" in runner

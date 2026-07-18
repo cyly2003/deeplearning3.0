@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import sqlite3
 import tempfile
 from contextlib import closing
@@ -15,8 +16,13 @@ from qsar_tl.training.deep_experiment import apply_finetune_freeze, apply_head_r
 def test_three_stage_split_keeps_ptox_and_mgkg_roles_separate() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "three_stage.sqlite"
+        audit_path = Path(tmpdir) / "routing_audit.csv"
         with closing(sqlite3.connect(db_path)) as conn:
-            columns = "aggregate_id TEXT, medium_domain TEXT, target_name TEXT, target_family TEXT, task_head TEXT, target_value REAL"
+            columns = (
+                "aggregate_id TEXT, medium_domain TEXT, target_name TEXT, target_family TEXT, "
+                "task_head TEXT, target_value REAL, result_ids TEXT, cas_number TEXT, "
+                "test_ids TEXT, reference_numbers TEXT"
+            )
             conn.execute(f"CREATE TABLE combined_records ({columns})")
             conn.execute(f"CREATE TABLE soil_ptox_records ({columns})")
             conn.execute(f"CREATE TABLE soil_mgkg_records ({columns})")
@@ -35,29 +41,36 @@ def test_three_stage_split_keeps_ptox_and_mgkg_roles_separate() -> None:
                 """
             )
             aquatic = [
-                ("SHARED", "aquatic", "ptox_mol_l", "aquatic_pTox_mol_L", "ECx_Mortality", 1.0),
-                ("A2", "aquatic", "ptox_mol_l", "aquatic_pTox_mol_L", "ECx_Mortality", 1.1),
+                ("SHARED_AGG", "aquatic", "ptox_mol_l", "aquatic_pTox_mol_L", "ECx_Mortality", 1.0, "[100]", "50-00-0", "[1]", "[10]"),
+                ("A_SHARED_RAW", "aquatic", "ptox_mol_l", "aquatic_pTox_mol_L", "ECx_Mortality", 1.1, "[300]", "51-00-0", "[2]", "[20]"),
+                # Same CAS/test/reference as P2 is not an exclusion key when the
+                # aggregate and exact raw result source remain distinct.
+                ("A_NARROW", "aquatic", "ptox_mol_l", "aquatic_pTox_mol_L", "ECx_Mortality", 1.2, "[400]", "52-00-0", "[7]", "[70]"),
+                ("A2", "aquatic", "ptox_mol_l", "aquatic_pTox_mol_L", "ECx_Mortality", 1.3, "[401]", "53-00-0", "[8]", "[80]"),
             ]
             soil_ptox = [
-                ("SHARED", "soil", "ptox_mol_l", "aquatic_pTox_mol_L", "ECx_Mortality", 1.2),
-                ("P2", "soil", "ptox_mol_l", "aquatic_pTox_mol_L", "ECx_Mortality", 1.3),
-                ("P3", "soil", "ptox_mol_l", "aquatic_pTox_mol_L", "ECx_Mortality", 1.4),
+                ("SHARED_AGG", "soil", "ptox_mol_l", "aquatic_pTox_mol_L", "ECx_Mortality", 1.4, "[100]", "50-00-0", "[1]", "[10]"),
+                ("P2", "soil", "ptox_mol_l", "aquatic_pTox_mol_L", "ECx_Mortality", 1.5, "[200]", "52-00-0", "[7]", "[70]"),
+                # This test-part candidate is not used for stage-2 fitting, but
+                # its exact source still has priority over aquatic stage 1.
+                ("P3", "soil", "ptox_mol_l", "aquatic_pTox_mol_L", "ECx_Mortality", 1.6, "[300]", "54-00-0", "[9]", "[90]"),
             ]
             soil_mgkg = [
-                ("SHARED", "soil", "neg_log10_mg_kg", "solid_neglog_mg_kg", "ECx_Mortality", 2.0),
-                ("M2", "soil", "neg_log10_mg_kg", "solid_neglog_mg_kg", "ECx_Mortality", 2.1),
-                ("M3", "soil", "neg_log10_mg_kg", "solid_neglog_mg_kg", "ECx_Mortality", 2.2),
+                ("M1", "soil", "neg_log10_mg_kg", "solid_neglog_mg_kg", "ECx_Mortality", 2.0, "[500]", "60-00-0", "[11]", "[110]"),
+                ("M2", "soil", "neg_log10_mg_kg", "solid_neglog_mg_kg", "ECx_Mortality", 2.1, "[501]", "61-00-0", "[12]", "[120]"),
+                ("M3", "soil", "neg_log10_mg_kg", "solid_neglog_mg_kg", "ECx_Mortality", 2.2, "[502]", "62-00-0", "[13]", "[130]"),
             ]
-            conn.executemany("INSERT INTO combined_records VALUES (?, ?, ?, ?, ?, ?)", aquatic + soil_ptox + soil_mgkg)
-            conn.executemany("INSERT INTO soil_ptox_records VALUES (?, ?, ?, ?, ?, ?)", soil_ptox)
-            conn.executemany("INSERT INTO soil_mgkg_records VALUES (?, ?, ?, ?, ?, ?)", soil_mgkg)
+            placeholders = ", ".join("?" for _ in range(10))
+            conn.executemany(f"INSERT INTO combined_records VALUES ({placeholders})", aquatic + soil_ptox + soil_mgkg)
+            conn.executemany(f"INSERT INTO soil_ptox_records VALUES ({placeholders})", soil_ptox)
+            conn.executemany(f"INSERT INTO soil_mgkg_records VALUES ({placeholders})", soil_mgkg)
             conn.executemany(
                 "INSERT INTO split_assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [
-                    ("SoilPtox_B", None, "SHARED", "train", 42, "random", "soil_ptox_records", "SHARED"),
+                    ("SoilPtox_B", None, "SHARED_AGG", "train", 42, "random", "soil_ptox_records", "SHARED_AGG"),
                     ("SoilPtox_B", None, "P2", "train", 42, "random", "soil_ptox_records", "P2"),
                     ("SoilPtox_B", None, "P3", "test", 42, "random", "soil_ptox_records", "P3"),
-                    ("SoilMgkg_B", None, "SHARED", "train", 42, "random", "soil_mgkg_records", "SHARED"),
+                    ("SoilMgkg_B", None, "M1", "train", 42, "random", "soil_mgkg_records", "M1"),
                     ("SoilMgkg_B", None, "M2", "train", 42, "random", "soil_mgkg_records", "M2"),
                     ("SoilMgkg_B", None, "M3", "test", 42, "random", "soil_mgkg_records", "M3"),
                 ],
@@ -72,9 +85,24 @@ def test_three_stage_split_keeps_ptox_and_mgkg_roles_separate() -> None:
             soil_mgkg_source_table="soil_mgkg_records",
             soil_mgkg_split_name="SoilMgkg_B",
             split_name="M_three_stage",
+            audit_csv=audit_path,
         )
 
         assert summary == {"finetune": 2, "finetune_mgkg": 2, "test": 1, "train": 2}
+        with audit_path.open(encoding="utf-8-sig", newline="") as handle:
+            audit = next(csv.DictReader(handle))
+        assert audit["aquatic_ptox_candidates_before"] == "4"
+        assert audit["routing_rule"] == "exact_aggregate_or_raw_result_v1"
+        assert audit["aquatic_ptox_excluded_total"] == "2"
+        assert audit["aquatic_ptox_excluded_shared_result_only"] == "1"
+        assert audit["aquatic_ptox_excluded_both"] == "1"
+        assert audit["aquatic_ptox_stage1_after"] == "2"
+        assert audit["soil_ptox_candidates_overlapping_aquatic_before"] == "2"
+        assert audit["residual_aggregate_id_overlap"] == "0"
+        assert audit["residual_result_id_overlap"] == "0"
+        assert len(audit["aquatic_ptox_excluded_identity_sha256"]) == 64
+        assert len(audit["aquatic_ptox_stage1_identity_sha256"]) == 64
+        assert len(audit["soil_ptox_candidates_identity_sha256"]) == 64
         frame = load_split_frame(
             db_path,
             split_name="M_three_stage",
@@ -86,6 +114,7 @@ def test_three_stage_split_keeps_ptox_and_mgkg_roles_separate() -> None:
         assert frame.attrs["split_join_audit"]["loaded_rows"] == len(frame)
         assert frame.attrs["split_join_audit"]["removed_rows_count"] == 0
         assert set(frame["split_part"]) == {"train", "finetune", "finetune_mgkg", "test"}
+        assert set(frame.loc[frame["split_part"] == "train", "aggregate_id"].astype(str)) == {"A_NARROW", "A2"}
         assert not ((frame["target_name"] == "ptox_mol_l") & (frame["split_part"] == "test")).any()
         stage3_test = frame.loc[frame["split_part"] == "test"]
         assert set(stage3_test["medium_domain"]) == {"soil"}
@@ -138,7 +167,7 @@ def test_three_stage_split_rejects_duplicate_strict_composite_identity() -> None
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "duplicate_identity.sqlite"
         with closing(sqlite3.connect(db_path)) as conn:
-            columns = "aggregate_id TEXT, medium_domain TEXT, target_name TEXT, target_family TEXT"
+            columns = "aggregate_id TEXT, medium_domain TEXT, target_name TEXT, target_family TEXT, result_ids TEXT"
             conn.execute(f"CREATE TABLE combined_records ({columns})")
             conn.execute(f"CREATE TABLE soil_ptox_records ({columns})")
             conn.execute(f"CREATE TABLE soil_mgkg_records ({columns})")
@@ -161,21 +190,22 @@ def test_three_stage_split_rejects_duplicate_strict_composite_identity() -> None
                 "aquatic",
                 "ptox_mol_l",
                 "aquatic_pTox_mol_L",
+                "[1]",
             )
             soil_ptox = [
-                ("P1", "soil", "ptox_mol_l", "aquatic_pTox_mol_L"),
-                ("P2", "soil", "ptox_mol_l", "aquatic_pTox_mol_L"),
+                ("P1", "soil", "ptox_mol_l", "aquatic_pTox_mol_L", "[2]"),
+                ("P2", "soil", "ptox_mol_l", "aquatic_pTox_mol_L", "[3]"),
             ]
             soil_mgkg = [
-                ("M1", "soil", "neg_log10_mg_kg", "solid_neglog_mg_kg"),
-                ("M2", "soil", "neg_log10_mg_kg", "solid_neglog_mg_kg"),
+                ("M1", "soil", "neg_log10_mg_kg", "solid_neglog_mg_kg", "[4]"),
+                ("M2", "soil", "neg_log10_mg_kg", "solid_neglog_mg_kg", "[5]"),
             ]
             conn.executemany(
-                "INSERT INTO combined_records VALUES (?, ?, ?, ?)",
+                "INSERT INTO combined_records VALUES (?, ?, ?, ?, ?)",
                 [aquatic_duplicate, aquatic_duplicate, *soil_ptox, *soil_mgkg],
             )
-            conn.executemany("INSERT INTO soil_ptox_records VALUES (?, ?, ?, ?)", soil_ptox)
-            conn.executemany("INSERT INTO soil_mgkg_records VALUES (?, ?, ?, ?)", soil_mgkg)
+            conn.executemany("INSERT INTO soil_ptox_records VALUES (?, ?, ?, ?, ?)", soil_ptox)
+            conn.executemany("INSERT INTO soil_mgkg_records VALUES (?, ?, ?, ?, ?)", soil_mgkg)
             conn.executemany(
                 "INSERT INTO split_assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [
