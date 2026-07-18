@@ -14,6 +14,7 @@ STAGE_SAMPLE_ID_PREFIX = "stage_sample_v1:"
 STAGE_CONTRACT_PREFIX = "stage_contract_v1"
 PTOX_TARGET_FAMILY = "aquatic_pTox_mol_L"
 MGKG_TARGET_FAMILY = "solid_neglog_mg_kg"
+MGKG_TARGET_NAME = "neg_log10_mg_kg"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +30,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--soil-ptox-split-name", default="SoilPtoxQC2_B_random_8_2")
     parser.add_argument("--soil-mgkg-source-table", default="aggregated_task_records_soil_mg_kg_qc")
     parser.add_argument("--soil-mgkg-split-name", default="SoilMgkgQC2_B_random_8_2")
+    parser.add_argument("--stage3-target-name", default=MGKG_TARGET_NAME)
+    parser.add_argument("--stage3-target-family", default=MGKG_TARGET_FAMILY)
+    parser.add_argument("--stage3-label", default="soil_mgkg")
     parser.add_argument("--split-name", default="M_v1_2_39_ptox_to_soil_mgkg_B_random_8_2")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
@@ -48,6 +52,9 @@ def main() -> None:
         soil_ptox_split_name=args.soil_ptox_split_name,
         soil_mgkg_source_table=args.soil_mgkg_source_table,
         soil_mgkg_split_name=args.soil_mgkg_split_name,
+        stage3_target_name=args.stage3_target_name,
+        stage3_target_family=args.stage3_target_family,
+        stage3_label=args.stage3_label,
         split_name=args.split_name,
         seed=args.seed,
         audit_csv=args.audit_csv,
@@ -64,6 +71,9 @@ def build_three_stage_split(
     soil_mgkg_source_table: str,
     soil_mgkg_split_name: str,
     split_name: str,
+    stage3_target_name: str = MGKG_TARGET_NAME,
+    stage3_target_family: str = MGKG_TARGET_FAMILY,
+    stage3_label: str = "soil_mgkg",
     seed: int = 42,
     audit_csv: Path | None = None,
 ) -> dict[str, int]:
@@ -74,7 +84,7 @@ def build_three_stage_split(
     removed from stage 1, regardless of whether that soil row later belongs to
     the stage-2 train or test part. Stage 2 contains only the training part of
     the existing soil pTox split. Stage 3 contains only the training part of the
-    existing soil mg/kg split; its test rows are the sole external test set.
+    existing soil target split; its test rows are the sole external test set.
     """
     with closing(sqlite3.connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -98,12 +108,17 @@ def build_three_stage_split(
             target_name="ptox_mol_l",
             target_family=PTOX_TARGET_FAMILY,
         )
+        stage3_target_name = str(stage3_target_name).strip()
+        stage3_target_family = str(stage3_target_family).strip()
+        stage3_label = str(stage3_label).strip().lower().replace("-", "_")
+        if not stage3_target_name or not stage3_target_family or not stage3_label:
+            raise ValueError("Stage-3 target name, family, and label must be non-empty.")
         soil_mgkg_rows = source_rows(
             conn,
             source_table,
             medium_domain="soil",
-            target_name="neg_log10_mg_kg",
-            target_family=MGKG_TARGET_FAMILY,
+            target_name=stage3_target_name,
+            target_family=stage3_target_family,
         )
         if not aquatic_ptox_rows or not soil_ptox_rows or not soil_mgkg_rows:
             raise ValueError("The three-stage source table is missing one or more required target domains.")
@@ -118,7 +133,13 @@ def build_three_stage_split(
         soil_ptox_parts = split_parts(conn, soil_ptox_split_name, soil_ptox_source_table)
         soil_mgkg_parts = split_parts(conn, soil_mgkg_split_name, soil_mgkg_source_table)
         assert_source_coverage("soil pTox", row_aggregate_ids(soil_ptox_rows), soil_ptox_parts)
-        assert_source_coverage("soil mg/kg", row_aggregate_ids(soil_mgkg_rows), soil_mgkg_parts)
+        assert_source_coverage(
+            f"soil stage-3 target {stage3_target_name}",
+            row_aggregate_ids(soil_mgkg_rows),
+            soil_mgkg_parts,
+        )
+
+        split_type = f"strict_three_stage_ptox_to_{stage3_label}"
 
         assignments: list[tuple[str, str, str, str, int, str, str, str]] = []
         assignments.extend(
@@ -128,7 +149,7 @@ def build_three_stage_split(
                 str(row["aggregate_id"]),
                 "train",
                 seed,
-                "strict_three_stage_ptox_to_soil_mgkg",
+                split_type,
                 source_table,
                 stage_group_key(
                     stage="aquatic_ptox_stage1",
@@ -146,7 +167,7 @@ def build_three_stage_split(
                 str(row["aggregate_id"]),
                 "finetune",
                 seed,
-                "strict_three_stage_ptox_to_soil_mgkg",
+                split_type,
                 source_table,
                 stage_group_key(
                     stage="soil_ptox_stage2_train",
@@ -165,13 +186,13 @@ def build_three_stage_split(
                 str(row["aggregate_id"]),
                 "finetune_mgkg",
                 seed,
-                "strict_three_stage_ptox_to_soil_mgkg",
+                split_type,
                 source_table,
                 stage_group_key(
-                    stage="soil_mgkg_stage3_train",
+                    stage=f"{stage3_label}_stage3_train",
                     medium_domain="soil",
-                    target_name="neg_log10_mg_kg",
-                    target_family=MGKG_TARGET_FAMILY,
+                    target_name=stage3_target_name,
+                    target_family=stage3_target_family,
                 ),
             )
             for row in soil_mgkg_rows
@@ -184,13 +205,13 @@ def build_three_stage_split(
                 str(row["aggregate_id"]),
                 "test",
                 seed,
-                "strict_three_stage_ptox_to_soil_mgkg",
+                split_type,
                 source_table,
                 stage_group_key(
-                    stage="soil_mgkg_stage3_test",
+                    stage=f"{stage3_label}_stage3_test",
                     medium_domain="soil",
-                    target_name="neg_log10_mg_kg",
-                    target_family=MGKG_TARGET_FAMILY,
+                    target_name=stage3_target_name,
+                    target_family=stage3_target_family,
                 ),
             )
             for row in soil_mgkg_rows

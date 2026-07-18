@@ -107,6 +107,23 @@ rules:
       - lower_exclusive: 1000.0
         index: 7
         label: soil_very_low_or_practically_nontoxic_screening
+  soil_mol_kg:
+    value_unit: mg/kg_source_equivalent
+    source: oecd_tg207
+    enabled_for_aux_loss: true
+    note: paired mol/kg target retains the parent mg/kg value only for the existing soil toxicity-bin auxiliary control
+    value_columns:
+      - standard_value_mg_kg
+    bins:
+      - upper: 100.0
+        index: 5
+        label: soil_higher_toxicity_screening
+      - upper: 1000.0
+        index: 6
+        label: soil_low_toxicity_screening
+      - lower_exclusive: 1000.0
+        index: 7
+        label: soil_very_low_or_practically_nontoxic_screening
   oral_mg_kg_d:
     value_unit: mg/kg-bw
     source: epa_terrestrial_oral_appendix_i

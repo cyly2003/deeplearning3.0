@@ -48,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--early-stopping-patience", type=int, default=None)
     parser.add_argument("--early-stopping-min-delta", type=float, default=None)
     parser.add_argument("--validation-fraction", type=float, default=None)
+    parser.add_argument("--validation-seed", type=int, default=None)
     parser.add_argument(
         "--monitor-split",
         default=None,
@@ -62,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--finetune-scheduler", default=None, choices=["none", "cosine", "reduce_on_plateau"])
     parser.add_argument("--finetune-freeze", default=None, choices=["none", "heads_only", "heads_embeddings"])
     parser.add_argument("--finetune-validation-fraction", type=float, default=None)
+    parser.add_argument("--finetune-validation-seed", type=int, default=None)
     parser.add_argument("--finetune-mgkg-epochs", type=int, default=None)
     parser.add_argument("--finetune-mgkg-learning-rate", type=float, default=None)
     parser.add_argument("--finetune-mgkg-batch-size", type=int, default=None)
@@ -72,6 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["none", "heads_only", "last_trunk", "heads_embeddings"],
     )
     parser.add_argument("--finetune-mgkg-validation-fraction", type=float, default=None)
+    parser.add_argument("--finetune-mgkg-validation-seed", type=int, default=None)
     parser.add_argument("--finetune-mgkg-head-only-epochs", type=int, default=None)
     parser.add_argument("--finetune-mgkg-trunk-learning-rate", type=float, default=None)
     parser.add_argument("--finetune-mgkg-replay-fraction", type=float, default=None)
@@ -193,6 +196,7 @@ def main() -> None:
         early_stopping_patience=args.early_stopping_patience,
         early_stopping_min_delta=args.early_stopping_min_delta,
         validation_fraction=args.validation_fraction,
+        validation_seed=args.validation_seed,
         monitor_split=args.monitor_split,
         finetune_epochs=args.finetune_epochs,
         finetune_learning_rate=args.finetune_learning_rate,
@@ -200,12 +204,14 @@ def main() -> None:
         finetune_scheduler=args.finetune_scheduler,
         finetune_freeze=args.finetune_freeze,
         finetune_validation_fraction=args.finetune_validation_fraction,
+        finetune_validation_seed=args.finetune_validation_seed,
         finetune_mgkg_epochs=args.finetune_mgkg_epochs,
         finetune_mgkg_learning_rate=args.finetune_mgkg_learning_rate,
         finetune_mgkg_batch_size=args.finetune_mgkg_batch_size,
         finetune_mgkg_scheduler=args.finetune_mgkg_scheduler,
         finetune_mgkg_freeze=args.finetune_mgkg_freeze,
         finetune_mgkg_validation_fraction=args.finetune_mgkg_validation_fraction,
+        finetune_mgkg_validation_seed=args.finetune_mgkg_validation_seed,
         finetune_mgkg_head_only_epochs=args.finetune_mgkg_head_only_epochs,
         finetune_mgkg_trunk_learning_rate=args.finetune_mgkg_trunk_learning_rate,
         finetune_mgkg_replay_fraction=args.finetune_mgkg_replay_fraction,

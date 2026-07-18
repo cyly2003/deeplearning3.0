@@ -33,6 +33,24 @@ def test_soil_mg_kg_hard_bins_and_boundary_flags() -> None:
         assert assignment.boundary_flag is expected_boundary
 
 
+def test_soil_mol_kg_target_reuses_only_the_parent_mgkg_auxiliary_threshold() -> None:
+    assignment = assign_toxicity_bin(
+        {
+            "unit_family_v2": "soil_mol_kg",
+            "standard_value_mg_kg": 95.0,
+            "target_name": "neg_log10_mol_kg",
+        },
+        _scheme(),
+        config=ToxicityBinningConfig(enabled=True),
+    )
+
+    assert assignment.status == "active"
+    assert assignment.value == 95.0
+    assert assignment.value_unit == "mg/kg_source_equivalent"
+    assert assignment.conversion == "direct_standard_value_mg_kg"
+    assert assignment.label == "soil_higher_toxicity_screening"
+
+
 def test_water_mg_l_epa_categories_at_boundaries() -> None:
     cfg = ToxicityBinningConfig(enabled=True)
     values = [

@@ -132,6 +132,12 @@ PREDICTION_METADATA_COLUMNS = (
     "standard_value_g_ha",
     "standard_value_mg_kg_diet",
     "standard_value_mg_kg_bw_day",
+    "standard_value_mol_kg",
+    "molecular_weight_g_mol_used",
+    "target_transform",
+    "parent_target_name",
+    "parent_target_family",
+    "parent_target_basis",
     "conversion_path",
     "original_split_part",
     "medium_domain",
@@ -539,6 +545,7 @@ def run_deep_experiment(
     early_stopping_patience: int | None = None,
     early_stopping_min_delta: float | None = None,
     validation_fraction: float | None = None,
+    validation_seed: int | None = None,
     monitor_split: str | None = None,
     finetune_epochs: int | None = None,
     finetune_learning_rate: float | None = None,
@@ -546,12 +553,14 @@ def run_deep_experiment(
     finetune_scheduler: str | None = None,
     finetune_freeze: str | None = None,
     finetune_validation_fraction: float | None = None,
+    finetune_validation_seed: int | None = None,
     finetune_mgkg_epochs: int | None = None,
     finetune_mgkg_learning_rate: float | None = None,
     finetune_mgkg_batch_size: int | None = None,
     finetune_mgkg_scheduler: str | None = None,
     finetune_mgkg_freeze: str | None = None,
     finetune_mgkg_validation_fraction: float | None = None,
+    finetune_mgkg_validation_seed: int | None = None,
     finetune_mgkg_head_only_epochs: int | None = None,
     finetune_mgkg_trunk_learning_rate: float | None = None,
     finetune_mgkg_replay_fraction: float | None = None,
@@ -802,7 +811,7 @@ def run_deep_experiment(
     actual_train_indices, validation_indices, validation_source = split_training_validation_indices(
         split_probe_samples,
         train_indices=train_indices,
-        seed=seed,
+        seed=int(seed if validation_seed is None else validation_seed),
         validation_fraction=early_cfg["validation_fraction"],
         monitor_split=early_cfg["monitor_split"],
     )
@@ -816,7 +825,7 @@ def run_deep_experiment(
     finetune_train_indices, finetune_validation_indices, finetune_validation_source = split_finetune_validation_indices(
         split_probe_samples,
         finetune_indices=finetune_indices,
-        seed=seed,
+        seed=int(seed if finetune_validation_seed is None else finetune_validation_seed),
         validation_fraction=float(
             finetune_validation_fraction
             if finetune_validation_fraction is not None
@@ -833,7 +842,7 @@ def run_deep_experiment(
         split_finetune_validation_indices(
             split_probe_samples,
             finetune_indices=finetune_mgkg_indices,
-            seed=seed + 20_000,
+            seed=int(seed + 20_000 if finetune_mgkg_validation_seed is None else finetune_mgkg_validation_seed),
             validation_fraction=float(
                 finetune_mgkg_validation_fraction
                 if finetune_mgkg_validation_fraction is not None
@@ -1810,6 +1819,15 @@ def run_deep_experiment(
         "finetune_mgkg_validation_source": finetune_mgkg_validation_source,
         "validation_rows": len(validation_indices),
         "validation_source": validation_source,
+        "validation_seed": int(seed if validation_seed is None else validation_seed),
+        "finetune_validation_seed": int(
+            seed if finetune_validation_seed is None else finetune_validation_seed
+        ),
+        "finetune_mgkg_validation_seed": int(
+            seed + 20_000
+            if finetune_mgkg_validation_seed is None
+            else finetune_mgkg_validation_seed
+        ),
         "task_heads": list(task_heads),
         "skipped_tasks": skipped_tasks,
         "fingerprint_size": fingerprint_size,
