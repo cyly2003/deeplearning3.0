@@ -21,9 +21,21 @@ AUDIT_CSV="outputs/audits/v1_2_39_ptox_to_soil_mgkg/${SPLIT_NAME}_routing_audit.
 CACHE_DIR="${CACHE_DIR_OVERRIDE:-outputs/cache/source_weights}"
 MODEL_SEED="${MODEL_SEED_OVERRIDE:-42}"
 FINETUNE_MGKG_FREEZE="${FINETUNE_MGKG_FREEZE_OVERRIDE:-none}"
+FINETUNE_MGKG_BATCH_SIZE="${FINETUNE_MGKG_BATCH_SIZE_OVERRIDE:-512}"
+FINETUNE_MGKG_LEARNING_RATE="${FINETUNE_MGKG_LEARNING_RATE_OVERRIDE:-0.0005}"
+FINETUNE_MGKG_TRUNK_LEARNING_RATE="${FINETUNE_MGKG_TRUNK_LEARNING_RATE_OVERRIDE:-0}"
+FINETUNE_MGKG_HEAD_ONLY_EPOCHS="${FINETUNE_MGKG_HEAD_ONLY_EPOCHS_OVERRIDE:-0}"
+FINETUNE_MGKG_REPLAY_FRACTION="${FINETUNE_MGKG_REPLAY_FRACTION_OVERRIDE:-0}"
+FINETUNE_MGKG_TOXICITY_BIN_LOSS_WEIGHT="${FINETUNE_MGKG_TOXICITY_BIN_LOSS_WEIGHT_OVERRIDE:-0}"
+MGKG_RESIDUAL_ADAPTER="${MGKG_RESIDUAL_ADAPTER_OVERRIDE:-0}"
+MGKG_RESIDUAL_ADAPTER_BOTTLENECK="${MGKG_RESIDUAL_ADAPTER_BOTTLENECK_OVERRIDE:-64}"
 case "$FINETUNE_MGKG_FREEZE" in
-  none|heads_only|heads_embeddings) ;;
-  *) echo "FINETUNE_MGKG_FREEZE_OVERRIDE must be none, heads_only, or heads_embeddings" >&2; exit 2 ;;
+  none|heads_only|last_trunk|heads_embeddings) ;;
+  *) echo "FINETUNE_MGKG_FREEZE_OVERRIDE must be none, heads_only, last_trunk, or heads_embeddings" >&2; exit 2 ;;
+esac
+case "$MGKG_RESIDUAL_ADAPTER" in
+  0|1) ;;
+  *) echo "MGKG_RESIDUAL_ADAPTER_OVERRIDE must be 0 or 1" >&2; exit 2 ;;
 esac
 
 mkdir -p "$(dirname "$AUDIT_CSV")" "$CACHE_DIR" outputs/logs
@@ -65,6 +77,14 @@ if [[ -s "$RUN_DIR/predictions.csv" && -s "$RUN_DIR/manifest.json" && -s "$RUN_D
   exit 0
 fi
 
+MGKG_ADAPTER_ARGS=(--no-mgkg-residual-adapter)
+if [[ "$MGKG_RESIDUAL_ADAPTER" == "1" ]]; then
+  MGKG_ADAPTER_ARGS=(
+    --mgkg-residual-adapter
+    --mgkg-residual-adapter-bottleneck "$MGKG_RESIDUAL_ADAPTER_BOTTLENECK"
+  )
+fi
+
 "$PYTHON" -m qsar_tl.training.train \
   --config "$CONFIG" \
   --db "$DB" \
@@ -84,9 +104,15 @@ fi
   --finetune-mgkg-scheduler cosine \
   --learning-rate 0.0005 \
   --finetune-learning-rate 0.0001 \
-  --finetune-mgkg-learning-rate 0.0005 \
+  --finetune-mgkg-learning-rate "$FINETUNE_MGKG_LEARNING_RATE" \
+  --finetune-mgkg-trunk-learning-rate "$FINETUNE_MGKG_TRUNK_LEARNING_RATE" \
+  --finetune-mgkg-head-only-epochs "$FINETUNE_MGKG_HEAD_ONLY_EPOCHS" \
+  --finetune-mgkg-replay-fraction "$FINETUNE_MGKG_REPLAY_FRACTION" \
+  --finetune-mgkg-toxicity-bin-loss-weight "$FINETUNE_MGKG_TOXICITY_BIN_LOSS_WEIGHT" \
+  --finetune-mgkg-batch-size "$FINETUNE_MGKG_BATCH_SIZE" \
   --finetune-freeze none \
   --finetune-mgkg-freeze "$FINETUNE_MGKG_FREEZE" \
+  "${MGKG_ADAPTER_ARGS[@]}" \
   --finetune-validation-fraction 0.2 \
   --finetune-mgkg-validation-fraction 0.2 \
   --early-stopping \

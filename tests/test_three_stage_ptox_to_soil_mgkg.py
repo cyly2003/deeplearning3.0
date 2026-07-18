@@ -10,7 +10,13 @@ import pytest
 
 from scripts.build_three_stage_ptox_to_soil_mgkg_split import build_three_stage_split
 from qsar_tl.training.baseline import load_split_frame
-from qsar_tl.training.deep_experiment import apply_finetune_freeze, apply_head_routing, get_ablation_spec
+from qsar_tl.training.deep_experiment import (
+    _TargetReplayBatchSampler,
+    apply_finetune_freeze,
+    apply_head_routing,
+    build_finetune_parameter_groups,
+    get_ablation_spec,
+)
 
 
 def test_three_stage_split_keeps_ptox_and_mgkg_roles_separate() -> None:
@@ -262,3 +268,59 @@ def test_mgkg_final_stage_allows_shared_representation_and_new_head_to_train() -
     assert all(parameter.requires_grad for parameter in model.heads.parameters())
     assert all(parameter.requires_grad for parameter in model.trunk.parameters())
     assert all(parameter.requires_grad for parameter in model.embeddings.parameters())
+
+
+def test_last_trunk_freeze_and_discriminative_parameter_groups() -> None:
+    import torch.nn as nn
+
+    class TinyNetwork(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.trunk = nn.Sequential(nn.Linear(3, 4), nn.ReLU(), nn.Linear(4, 2))
+            self.embeddings = nn.ModuleDict({"species": nn.Embedding(3, 2)})
+            self.adapters = nn.ModuleList()
+            self.heads = nn.ModuleDict({"ptox": nn.Linear(2, 1), "mgkg": nn.Linear(2, 1)})
+            self.mgkg_residual_adapter = None
+
+    model = TinyNetwork()
+    groups = build_finetune_parameter_groups(
+        model,
+        freeze_mode="last_trunk",
+        head_learning_rate=5e-4,
+        trunk_learning_rate=3e-5,
+    )
+
+    assert [group["name"] for group in groups] == ["head", "trunk"]
+    assert [group["lr"] for group in groups] == [5e-4, 3e-5]
+    assert all(parameter.requires_grad for parameter in model.heads.parameters())
+    assert not any(parameter.requires_grad for parameter in model.trunk[0].parameters())
+    assert all(parameter.requires_grad for parameter in model.trunk[2].parameters())
+    assert not any(parameter.requires_grad for parameter in model.embeddings.parameters())
+    grouped = {id(parameter) for group in groups for parameter in group["params"]}
+    trainable = {id(parameter) for parameter in model.parameters() if parameter.requires_grad}
+    assert grouped == trainable
+
+
+def test_target_replay_batch_sampler_has_fixed_ratio_and_epoch_rotation() -> None:
+    sampler = _TargetReplayBatchSampler(
+        target_count=12,
+        replay_count=5,
+        batch_size=8,
+        replay_fraction=0.25,
+        seed=42,
+    )
+    epoch_zero = list(iter(sampler))
+    target_rows = [index for batch in epoch_zero for index in batch if index < 12]
+    replay_rows = [index for batch in epoch_zero for index in batch if index >= 12]
+
+    assert sorted(target_rows) == list(range(12))
+    assert all(len(batch) == 8 for batch in epoch_zero)
+    assert all(sum(index >= 12 for index in batch) == 2 for batch in epoch_zero)
+    assert len(replay_rows) == 4
+    assert len(set(replay_rows)) == 4
+
+    sampler.set_epoch(1)
+    epoch_one = list(iter(sampler))
+    assert epoch_one != epoch_zero
+    sampler.set_epoch(0)
+    assert list(iter(sampler)) == epoch_zero

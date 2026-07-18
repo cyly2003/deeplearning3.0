@@ -41,6 +41,9 @@ class DeepModelConfig:
     use_adapters: bool = True
     toxicity_bin_count: int = 0
     toxicity_binning_mode: str = "none"
+    use_mgkg_residual_adapter: bool = False
+    mgkg_residual_adapter_bottleneck: int = 32
+    mgkg_residual_adapter_heads: tuple[str, ...] = ()
 
 
 class EcotoxMultiTaskNetwork(nn.Module):
@@ -54,6 +57,7 @@ class EcotoxMultiTaskNetwork(nn.Module):
             raise ValueError("At least one task head is required.")
 
         self.config = config
+        self.mgkg_residual_adapter_heads = frozenset(config.mgkg_residual_adapter_heads)
         self.effect_level_numeric_indices = tuple(int(index) for index in config.effect_level_numeric_indices)
         invalid_effect_indices = [
             index
@@ -139,6 +143,15 @@ class EcotoxMultiTaskNetwork(nn.Module):
         self.heads = nn.ModuleDict(
             {task_head: nn.Linear(head_input_dim, 1) for task_head in config.task_heads}
         )
+        self.mgkg_residual_adapter = (
+            build_zero_initialized_residual_adapter(
+                head_input_dim,
+                bottleneck_dim=int(config.mgkg_residual_adapter_bottleneck),
+                dropout=config.dropout,
+            )
+            if config.use_mgkg_residual_adapter
+            else None
+        )
         toxicity_bin_count = max(0, int(config.toxicity_bin_count))
         toxicity_mode = str(config.toxicity_binning_mode or "none").strip().lower()
         self.toxicity_bin_classifier = (
@@ -162,7 +175,17 @@ class EcotoxMultiTaskNetwork(nn.Module):
             adapter_ids=adapter_ids,
             molecular_graph=molecular_graph,
         )
-        outputs = {task_head: head(shared).squeeze(-1) for task_head, head in self.heads.items()}
+        mgkg_shared = (
+            shared + self.mgkg_residual_adapter(shared)
+            if self.mgkg_residual_adapter is not None
+            else shared
+        )
+        outputs = {
+            task_head: head(
+                mgkg_shared if task_head in self.mgkg_residual_adapter_heads else shared
+            ).squeeze(-1)
+            for task_head, head in self.heads.items()
+        }
         if self.toxicity_bin_classifier is not None:
             outputs[TOXICITY_BIN_LOGITS_KEY] = self.toxicity_bin_classifier(shared)
         return outputs
@@ -458,6 +481,28 @@ def build_adapter(hidden_dim: int, dropout: float) -> nn.Sequential:
     if dropout > 0:
         layers.append(nn.Dropout(dropout))
     layers.append(nn.Linear(hidden_dim, hidden_dim))
+    return nn.Sequential(*layers)
+
+
+def build_zero_initialized_residual_adapter(
+    hidden_dim: int,
+    *,
+    bottleneck_dim: int,
+    dropout: float,
+) -> nn.Sequential:
+    """Build a conservative target-domain adapter that starts as an identity residual."""
+
+    bottleneck = max(1, min(int(bottleneck_dim), int(hidden_dim)))
+    layers: list[nn.Module] = [
+        nn.Linear(hidden_dim, bottleneck),
+        nn.ReLU(),
+    ]
+    if dropout > 0:
+        layers.append(nn.Dropout(dropout))
+    output_layer = nn.Linear(bottleneck, hidden_dim)
+    nn.init.zeros_(output_layer.weight)
+    nn.init.zeros_(output_layer.bias)
+    layers.append(output_layer)
     return nn.Sequential(*layers)
 
 

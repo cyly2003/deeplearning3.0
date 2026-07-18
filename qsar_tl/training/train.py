@@ -66,8 +66,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--finetune-mgkg-learning-rate", type=float, default=None)
     parser.add_argument("--finetune-mgkg-batch-size", type=int, default=None)
     parser.add_argument("--finetune-mgkg-scheduler", default=None, choices=["none", "cosine", "reduce_on_plateau"])
-    parser.add_argument("--finetune-mgkg-freeze", default=None, choices=["none", "heads_only", "heads_embeddings"])
+    parser.add_argument(
+        "--finetune-mgkg-freeze",
+        default=None,
+        choices=["none", "heads_only", "last_trunk", "heads_embeddings"],
+    )
     parser.add_argument("--finetune-mgkg-validation-fraction", type=float, default=None)
+    parser.add_argument("--finetune-mgkg-head-only-epochs", type=int, default=None)
+    parser.add_argument("--finetune-mgkg-trunk-learning-rate", type=float, default=None)
+    parser.add_argument("--finetune-mgkg-replay-fraction", type=float, default=None)
+    parser.add_argument("--finetune-mgkg-toxicity-bin-loss-weight", type=float, default=None)
+    parser.add_argument(
+        "--mgkg-residual-adapter",
+        dest="mgkg_residual_adapter",
+        action="store_true",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-mgkg-residual-adapter",
+        dest="mgkg_residual_adapter",
+        action="store_false",
+    )
+    parser.add_argument("--mgkg-residual-adapter-bottleneck", type=int, default=None)
     parser.add_argument("--head-routing", default=None, choices=["task", "task_target"])
     parser.add_argument(
         "--allow-mixed-target-dimensions",
@@ -186,6 +206,12 @@ def main() -> None:
         finetune_mgkg_scheduler=args.finetune_mgkg_scheduler,
         finetune_mgkg_freeze=args.finetune_mgkg_freeze,
         finetune_mgkg_validation_fraction=args.finetune_mgkg_validation_fraction,
+        finetune_mgkg_head_only_epochs=args.finetune_mgkg_head_only_epochs,
+        finetune_mgkg_trunk_learning_rate=args.finetune_mgkg_trunk_learning_rate,
+        finetune_mgkg_replay_fraction=args.finetune_mgkg_replay_fraction,
+        finetune_mgkg_toxicity_bin_loss_weight=args.finetune_mgkg_toxicity_bin_loss_weight,
+        mgkg_residual_adapter=args.mgkg_residual_adapter,
+        mgkg_residual_adapter_bottleneck=args.mgkg_residual_adapter_bottleneck,
         head_routing=args.head_routing,
         allow_mixed_target_dimensions=args.allow_mixed_target_dimensions,
         augment_train_replicates=args.augment_train_replicates,

@@ -188,6 +188,7 @@ def load_model(run_dir: Path, *, manifest: dict[str, Any], preprocessing: dict[s
         for key, value in (descriptor_encoder.get("groups", {}) or {}).items()
         if isinstance(value, list)
     }
+    mgkg_adapter = manifest.get("mgkg_residual_adapter", {}) or {}
     model = EcotoxMultiTaskNetwork(
         DeepModelConfig(
             numeric_dim=len(preprocessing["numeric_feature_names"]),
@@ -206,6 +207,9 @@ def load_model(run_dir: Path, *, manifest: dict[str, Any], preprocessing: dict[s
             dropout=float(config.get("model", {}).get("dropout", 0.15)),
             use_molecular_residual=bool(ablation_features.get("use_molecular_residual", True)),
             use_adapters=bool(ablation_features.get("use_medium_adapter", False)),
+            use_mgkg_residual_adapter=bool(mgkg_adapter.get("enabled", False)),
+            mgkg_residual_adapter_bottleneck=int(mgkg_adapter.get("bottleneck_dim", 32)),
+            mgkg_residual_adapter_heads=tuple(str(value) for value in mgkg_adapter.get("task_heads", [])),
         )
     )
     state = torch.load(run_dir / "best_model.pt", map_location="cpu")

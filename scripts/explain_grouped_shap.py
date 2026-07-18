@@ -344,6 +344,7 @@ def load_model_from_artifacts(
     hidden_dims = _hidden_dims_from_state(state)
     bin_weight = state.get("toxicity_bin_classifier.weight")
     ablation_features = manifest.get("ablation_features", {}) or {}
+    mgkg_adapter = manifest.get("mgkg_residual_adapter", {}) or {}
     model = EcotoxMultiTaskNetwork(
         DeepModelConfig(
             numeric_dim=int(manifest.get("numeric_dim", len(preprocessing["numeric_feature_names"]))),
@@ -364,6 +365,9 @@ def load_model_from_artifacts(
             toxicity_bin_count=0 if bin_weight is None else int(bin_weight.shape[0]),
             toxicity_binning_mode="none" if bin_weight is None else "aux_classification",
             task_heads=tuple(str(head) for head in manifest["task_heads"]),
+            use_mgkg_residual_adapter=bool(mgkg_adapter.get("enabled", False)),
+            mgkg_residual_adapter_bottleneck=int(mgkg_adapter.get("bottleneck_dim", 32)),
+            mgkg_residual_adapter_heads=tuple(str(value) for value in mgkg_adapter.get("task_heads", [])),
         )
     )
     model.load_state_dict(state, strict=True)

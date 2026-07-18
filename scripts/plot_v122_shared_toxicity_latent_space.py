@@ -422,6 +422,7 @@ def load_model(run_dir: Path, *, manifest: Mapping[str, Any], preprocessing: Map
     toxicity_cfg = dict(manifest.get("toxicity_binning") or {})
     ablation_features = dict(manifest.get("ablation_features") or preprocessing.get("ablation_features") or {})
     graph_cfg = dict(manifest.get("molecular_graph") or preprocessing.get("molecular_graph") or {})
+    mgkg_adapter = dict(manifest.get("mgkg_residual_adapter") or {})
     model = EcotoxMultiTaskNetwork(
         DeepModelConfig(
             numeric_dim=numeric_dim,
@@ -445,6 +446,9 @@ def load_model(run_dir: Path, *, manifest: Mapping[str, Any], preprocessing: Map
             use_adapters=bool(ablation_features.get("use_medium_adapter", True)),
             toxicity_bin_count=int(toxicity_cfg.get("class_count", 0)) if bool(toxicity_cfg.get("enabled", False)) else 0,
             toxicity_binning_mode=str(toxicity_cfg.get("mode", "none")),
+            use_mgkg_residual_adapter=bool(mgkg_adapter.get("enabled", False)),
+            mgkg_residual_adapter_bottleneck=int(mgkg_adapter.get("bottleneck_dim", 32)),
+            mgkg_residual_adapter_heads=tuple(str(value) for value in mgkg_adapter.get("task_heads", [])),
         )
     )
     actual_input_dim = int(model.trunk[0].weight.shape[1])

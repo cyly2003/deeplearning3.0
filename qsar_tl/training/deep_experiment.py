@@ -110,6 +110,7 @@ PREDICTION_METADATA_COLUMNS = (
     "sample_id",
     "aggregate_id",
     "record_id",
+    "result_ids",
     "split_name",
     "split_part",
     "task_head",
@@ -551,6 +552,12 @@ def run_deep_experiment(
     finetune_mgkg_scheduler: str | None = None,
     finetune_mgkg_freeze: str | None = None,
     finetune_mgkg_validation_fraction: float | None = None,
+    finetune_mgkg_head_only_epochs: int | None = None,
+    finetune_mgkg_trunk_learning_rate: float | None = None,
+    finetune_mgkg_replay_fraction: float | None = None,
+    finetune_mgkg_toxicity_bin_loss_weight: float | None = None,
+    mgkg_residual_adapter: bool | None = None,
+    mgkg_residual_adapter_bottleneck: int | None = None,
     head_routing: str | None = None,
     allow_mixed_target_dimensions: bool | None = None,
     weight_decay: float | None = None,
@@ -722,6 +729,42 @@ def run_deep_experiment(
         if finetune_mgkg_freeze is not None
         else finetune_mgkg_cfg.get("freeze", "none")
     ).strip().lower()
+    finetune_mgkg_head_only_epoch_count = int(
+        finetune_mgkg_head_only_epochs
+        if finetune_mgkg_head_only_epochs is not None
+        else finetune_mgkg_cfg.get("head_only_epochs", 0)
+    )
+    if finetune_mgkg_head_only_epoch_count < 0:
+        raise ValueError("finetune_mgkg head_only_epochs must be non-negative.")
+    if finetune_mgkg_head_only_epoch_count > requested_finetune_mgkg_epochs:
+        raise ValueError("finetune_mgkg head_only_epochs cannot exceed total epochs.")
+    finetune_mgkg_trunk_lr = float(
+        finetune_mgkg_trunk_learning_rate
+        if finetune_mgkg_trunk_learning_rate is not None
+        else finetune_mgkg_cfg.get("trunk_learning_rate", 0.0)
+    )
+    finetune_mgkg_replay_ratio = float(
+        finetune_mgkg_replay_fraction
+        if finetune_mgkg_replay_fraction is not None
+        else finetune_mgkg_cfg.get("soil_ptox_replay_fraction", 0.0)
+    )
+    if not 0.0 <= finetune_mgkg_replay_ratio <= 0.5:
+        raise ValueError("finetune_mgkg soil_ptox_replay_fraction must be in [0, 0.5].")
+    if finetune_mgkg_replay_ratio > 0 and head_routing_mode != "task_target":
+        raise ValueError("Soil pTox replay requires task_target head routing.")
+    model_cfg = config.get("model", {}) if isinstance(config.get("model", {}), dict) else {}
+    use_mgkg_residual_adapter = bool(
+        mgkg_residual_adapter
+        if mgkg_residual_adapter is not None
+        else model_cfg.get("use_mgkg_residual_adapter", False)
+    )
+    mgkg_adapter_bottleneck = int(
+        mgkg_residual_adapter_bottleneck
+        if mgkg_residual_adapter_bottleneck is not None
+        else model_cfg.get("mgkg_residual_adapter_bottleneck", 32)
+    )
+    if mgkg_adapter_bottleneck <= 0:
+        raise ValueError("mgkg_residual_adapter_bottleneck must be positive.")
 
     fingerprint_size = int(config.get("features", {}).get("molecule", {}).get("morgan_n_bits", 512))
     cache_path = _molecular_cache_path(config)
@@ -941,10 +984,41 @@ def run_deep_experiment(
     )
     validation_dataset = _IndexDataset(dataset, validation_indices) if validation_indices else None
     task_heads = dataset.task_heads()
+    mgkg_adapter_heads = tuple(
+        sorted(
+            {
+                str(sample.get("task_head", ""))
+                for sample in samples
+                if str(sample.get("target_name", "")).strip() == "neg_log10_mg_kg"
+            }
+        )
+    )
+    if use_mgkg_residual_adapter:
+        invalid_mgkg_families = sorted(
+            {
+                str(sample.get("target_family", "")).strip()
+                for sample in samples
+                if str(sample.get("target_name", "")).strip() == "neg_log10_mg_kg"
+                and str(sample.get("target_family", "")).strip() != "solid_neglog_mg_kg"
+            }
+        )
+        if not mgkg_adapter_heads:
+            raise ValueError("mg/kg residual adapter requires at least one neg_log10_mg_kg task head.")
+        if invalid_mgkg_families:
+            raise ValueError(
+                "mg/kg residual adapter found unexpected target families: "
+                f"{invalid_mgkg_families}"
+            )
+        if not set(mgkg_adapter_heads).issubset(set(task_heads)):
+            raise ValueError("mg/kg residual adapter heads must be a subset of model task heads.")
     categorical_cardinalities = {
         column: max(mapping.values(), default=0) + 1
         for column, mapping in categorical_maps.items()
     }
+    # Seed before module construction so each matrix cell has reproducible and
+    # paired shared-parameter initialization. A second reset below keeps data
+    # loader randomness invariant to optional architecture modules.
+    set_torch_seed(seed)
     model = EcotoxMultiTaskNetwork(
         DeepModelConfig(
             numeric_dim=dataset.numeric_dim(),
@@ -968,6 +1042,9 @@ def run_deep_experiment(
             use_adapters=ablation_spec.use_medium_adapter,
             toxicity_bin_count=toxicity_bin_count,
             toxicity_binning_mode=toxicity_binning_cfg.mode if toxicity_binning_cfg.enabled else "none",
+            use_mgkg_residual_adapter=use_mgkg_residual_adapter,
+            mgkg_residual_adapter_bottleneck=mgkg_adapter_bottleneck,
+            mgkg_residual_adapter_heads=mgkg_adapter_heads,
         )
     )
 
@@ -1044,7 +1121,14 @@ def run_deep_experiment(
         device=train_config.device,
         seed=seed,
         num_workers=train_config.num_workers,
-        toxicity_bin_loss_weight=train_config.toxicity_bin_loss_weight,
+        toxicity_bin_loss_weight=float(
+            finetune_mgkg_toxicity_bin_loss_weight
+            if finetune_mgkg_toxicity_bin_loss_weight is not None
+            else finetune_mgkg_cfg.get(
+                "toxicity_bin_loss_weight",
+                train_config.toxicity_bin_loss_weight,
+            )
+        ),
         toxicity_binning_mode=train_config.toxicity_binning_mode,
         censored_loss_weight=train_config.censored_loss_weight,
         censored_loss_margin=train_config.censored_loss_margin,
@@ -1339,6 +1423,11 @@ def run_deep_experiment(
     finetune_mgkg_best_epoch = 0
     finetune_mgkg_best_monitor_loss = float("inf")
     finetune_mgkg_no_improve_epochs = 0
+    finetune_mgkg_target_samples = 0
+    finetune_mgkg_replay_samples = 0
+    finetune_mgkg_target_per_full_batch = 0
+    finetune_mgkg_replay_per_full_batch = 0
+    finetune_mgkg_replay_audit: dict[str, Any] = {}
     finetune_mgkg_early_enabled = bool(
         finetune_mgkg_validation_indices
         and bool(finetune_mgkg_cfg.get("early_stopping", True))
@@ -1350,13 +1439,22 @@ def run_deep_experiment(
         finetune_mgkg_cfg.get("early_stopping_min_delta", finetune_min_delta)
     )
     if finetune_mgkg_requested and finetune_mgkg_train_indices:
+        if finetune_mgkg_replay_ratio > 0 and not finetune_train_indices:
+            raise ValueError(
+                "Soil pTox replay was requested, but stage-2 has no training-only rows."
+            )
+        if finetune_mgkg_replay_ratio > 0:
+            finetune_mgkg_replay_audit = audit_mgkg_replay_boundary(
+                samples,
+                replay_indices=finetune_train_indices,
+                mgkg_indices=finetune_mgkg_train_indices,
+            )
         # The last stage is the deliverable target. Do not let a previous-stage
         # SWA snapshot overwrite its dedicated mg/kg calibration.
         swa_model = None
         swa_updates = 0
         swa_last_global_epoch = 0
-        trainable_parameters = apply_finetune_freeze(model, finetune_mgkg_freeze_mode)
-        finetune_mgkg_dataset = build_noisy_index_dataset(
+        finetune_mgkg_target_dataset = build_noisy_index_dataset(
             dataset,
             finetune_mgkg_train_indices,
             replicates=augmentation_cfg.finetune_replicates,
@@ -1364,13 +1462,59 @@ def run_deep_experiment(
             target_noise_std=augmentation_cfg.target_noise_std,
             seed=augmentation_cfg.seed + 200_000,
         )
-        finetune_mgkg_loader = DataLoader(
-            finetune_mgkg_dataset,
+        finetune_mgkg_replay_dataset = build_noisy_index_dataset(
+            dataset,
+            finetune_train_indices,
+            replicates=augmentation_cfg.finetune_replicates,
+            numeric_noise_std=augmentation_cfg.numeric_noise_std,
+            target_noise_std=augmentation_cfg.target_noise_std,
+            seed=augmentation_cfg.seed + 300_000,
+        )
+        finetune_mgkg_pool_dataset = _StagePoolDataset(
+            finetune_mgkg_target_dataset,
+            finetune_mgkg_replay_dataset,
+        )
+        finetune_mgkg_target_samples = finetune_mgkg_pool_dataset.target_count
+        finetune_mgkg_target_loader = DataLoader(
+            finetune_mgkg_target_dataset,
             batch_size=finetune_mgkg_config.batch_size,
             shuffle=True,
             collate_fn=collate_aggregated_task_batch,
             **dataloader_runtime_options(torch_device, finetune_mgkg_config.num_workers),
         )
+        finetune_mgkg_replay_sampler = (
+            _TargetReplayBatchSampler(
+                target_count=finetune_mgkg_pool_dataset.target_count,
+                replay_count=finetune_mgkg_pool_dataset.replay_pool_count,
+                batch_size=finetune_mgkg_config.batch_size,
+                replay_fraction=finetune_mgkg_replay_ratio,
+                seed=seed + 400_000,
+            )
+            if finetune_mgkg_replay_ratio > 0
+            else None
+        )
+        finetune_mgkg_replay_loader = (
+            DataLoader(
+                finetune_mgkg_pool_dataset,
+                batch_sampler=finetune_mgkg_replay_sampler,
+                collate_fn=collate_aggregated_task_batch,
+                **dataloader_runtime_options(torch_device, finetune_mgkg_config.num_workers),
+            )
+            if finetune_mgkg_replay_sampler is not None
+            else None
+        )
+        finetune_mgkg_replay_samples = (
+            finetune_mgkg_replay_sampler.replay_samples_per_epoch
+            if finetune_mgkg_replay_sampler is not None
+            else 0
+        )
+        if finetune_mgkg_replay_sampler is not None:
+            finetune_mgkg_target_per_full_batch = (
+                finetune_mgkg_replay_sampler.target_per_full_batch
+            )
+            finetune_mgkg_replay_per_full_batch = (
+                finetune_mgkg_replay_sampler.replay_per_full_batch
+            )
         finetune_mgkg_validation_loader = (
             DataLoader(
                 _IndexDataset(dataset, finetune_mgkg_validation_indices),
@@ -1382,14 +1526,61 @@ def run_deep_experiment(
             if finetune_mgkg_validation_indices
             else None
         )
+        initial_freeze_mode = (
+            "heads_only"
+            if finetune_mgkg_head_only_epoch_count > 0
+            else finetune_mgkg_freeze_mode
+        )
+        trainable_parameters = build_finetune_parameter_groups(
+            model,
+            freeze_mode=initial_freeze_mode,
+            head_learning_rate=finetune_mgkg_config.learning_rate,
+            trunk_learning_rate=(
+                0.0 if initial_freeze_mode == "heads_only" else finetune_mgkg_trunk_lr
+            ),
+        )
         optimizer = build_optimizer(trainable_parameters, finetune_mgkg_config)
-        scheduler = build_scheduler(
-            optimizer,
-            finetune_mgkg_config,
-            finetune_mgkg_config.epochs,
+        initial_phase_epochs = (
+            finetune_mgkg_head_only_epoch_count
+            if finetune_mgkg_head_only_epoch_count > 0
+            else finetune_mgkg_config.epochs
+        )
+        scheduler = build_scheduler(optimizer, finetune_mgkg_config, initial_phase_epochs)
+        finetune_mgkg_loader = (
+            finetune_mgkg_replay_loader
+            if initial_freeze_mode != "heads_only" and finetune_mgkg_replay_loader is not None
+            else finetune_mgkg_target_loader
         )
         finetune_mgkg_best_state: dict[str, Any] | None = None
         for epoch in range(1, finetune_mgkg_config.epochs + 1):
+            optimizer_reset_at_unfreeze = False
+            if (
+                finetune_mgkg_head_only_epoch_count > 0
+                and epoch == finetune_mgkg_head_only_epoch_count + 1
+            ):
+                trainable_parameters = build_finetune_parameter_groups(
+                    model,
+                    freeze_mode=finetune_mgkg_freeze_mode,
+                    head_learning_rate=finetune_mgkg_config.learning_rate,
+                    trunk_learning_rate=finetune_mgkg_trunk_lr,
+                )
+                optimizer = build_optimizer(trainable_parameters, finetune_mgkg_config)
+                scheduler = build_scheduler(
+                    optimizer,
+                    finetune_mgkg_config,
+                    finetune_mgkg_config.epochs - finetune_mgkg_head_only_epoch_count,
+                )
+                finetune_mgkg_no_improve_epochs = 0
+                optimizer_reset_at_unfreeze = True
+                if finetune_mgkg_replay_loader is not None:
+                    finetune_mgkg_loader = finetune_mgkg_replay_loader
+            mgkg_subphase = (
+                "heads_only"
+                if epoch <= finetune_mgkg_head_only_epoch_count
+                else finetune_mgkg_freeze_mode
+            )
+            if finetune_mgkg_loader is finetune_mgkg_replay_loader:
+                finetune_mgkg_replay_sampler.set_epoch(epoch)
             epoch_loss = train_one_epoch(
                 model,
                 finetune_mgkg_loader,
@@ -1430,8 +1621,10 @@ def run_deep_experiment(
                 finetune_mgkg_best_epoch = global_epoch
                 finetune_mgkg_no_improve_epochs = 0
                 finetune_mgkg_best_state = clone_state_dict(model)
+            group_learning_rates = optimizer_learning_rates(optimizer)
             row = {
                 "phase": "finetune_mgkg",
+                "mgkg_subphase": mgkg_subphase,
                 "epoch": epoch,
                 "global_epoch": global_epoch,
                 **weighting_history_fields,
@@ -1447,6 +1640,17 @@ def run_deep_experiment(
                 "best_epoch": finetune_mgkg_best_epoch,
                 "no_improve_epochs": finetune_mgkg_no_improve_epochs,
                 "learning_rate": current_learning_rate(optimizer),
+                "head_learning_rate": group_learning_rates.get(
+                    "head", current_learning_rate(optimizer)
+                ),
+                "trunk_learning_rate": group_learning_rates.get("trunk", ""),
+                "optimizer_reset_at_unfreeze": optimizer_reset_at_unfreeze,
+                "mgkg_target_samples": finetune_mgkg_target_samples,
+                "soil_ptox_replay_samples": (
+                    finetune_mgkg_replay_samples
+                    if finetune_mgkg_loader is finetune_mgkg_replay_loader
+                    else 0
+                ),
                 "swa_updates": 0,
             }
             history.append(row)
@@ -1460,11 +1664,21 @@ def run_deep_experiment(
                 else f" validation_loss={finetune_mgkg_validation_loss['mean_loss']:.6f}"
             )
             print(
-                f"[finetune_mgkg epoch {epoch}] mean_loss={epoch_loss['mean_loss']:.6f}{validation_msg} "
+                f"[finetune_mgkg epoch {epoch} subphase={mgkg_subphase}] "
+                f"mean_loss={epoch_loss['mean_loss']:.6f}{validation_msg} "
                 f"samples={epoch_loss['samples']} best_epoch={best_epoch}",
                 flush=True,
             )
-            if finetune_mgkg_early_enabled and finetune_mgkg_no_improve_epochs >= finetune_mgkg_patience:
+            can_early_stop = (
+                finetune_mgkg_head_only_epoch_count <= 0
+                or epoch > finetune_mgkg_head_only_epoch_count
+                or finetune_mgkg_head_only_epoch_count >= finetune_mgkg_config.epochs
+            )
+            if (
+                finetune_mgkg_early_enabled
+                and can_early_stop
+                and finetune_mgkg_no_improve_epochs >= finetune_mgkg_patience
+            ):
                 print(
                     f"[finetune_mgkg early-stop] epoch={epoch} best_epoch={finetune_mgkg_best_epoch} "
                     f"monitor_loss={finetune_mgkg_best_monitor_loss:.6f}",
@@ -1574,6 +1788,8 @@ def run_deep_experiment(
     else:
         best_model_path = None
     manifest = {
+        "architecture_schema_version": 2,
+        "seed": seed,
         "split_name": split_name,
         "data_source": {
             "modeling_tables_db": str(Path(db_path)),
@@ -1683,8 +1899,50 @@ def run_deep_experiment(
             "early_stopping_patience": finetune_mgkg_patience,
             "early_stopping_min_delta": finetune_mgkg_min_delta,
             "learning_rate": finetune_mgkg_config.learning_rate,
+            "head_learning_rate": finetune_mgkg_config.learning_rate,
+            "trunk_learning_rate": (
+                finetune_mgkg_trunk_lr if finetune_mgkg_trunk_lr > 0 else None
+            ),
             "batch_size": finetune_mgkg_config.batch_size,
             "freeze": finetune_mgkg_freeze_mode,
+            "head_only_epochs": finetune_mgkg_head_only_epoch_count,
+            "post_unfreeze_epochs": max(
+                finetune_mgkg_config.epochs - finetune_mgkg_head_only_epoch_count,
+                0,
+            ),
+            "optimizer_reset_at_unfreeze": bool(
+                finetune_mgkg_head_only_epoch_count > 0
+                and finetune_mgkg_head_only_epoch_count < finetune_mgkg_config.epochs
+            ),
+            "soil_ptox_replay_fraction_requested": finetune_mgkg_replay_ratio,
+            "soil_ptox_replay_start_epoch": (
+                finetune_mgkg_head_only_epoch_count + 1
+                if finetune_mgkg_replay_ratio > 0
+                else None
+            ),
+            "soil_ptox_replay_source": "finetune_training_only",
+            "soil_ptox_replay_sampling": "fixed_row_fraction_per_batch",
+            "soil_ptox_replay_objective_weighting": "existing_task_balanced_loss",
+            "soil_ptox_replay_candidate_rows": len(finetune_train_indices),
+            "mgkg_target_samples_per_epoch": finetune_mgkg_target_samples,
+            "soil_ptox_replay_samples_per_epoch": finetune_mgkg_replay_samples,
+            "mgkg_target_rows_per_full_batch": finetune_mgkg_target_per_full_batch,
+            "soil_ptox_replay_rows_per_full_batch": finetune_mgkg_replay_per_full_batch,
+            "soil_ptox_replay_fraction_realized": (
+                finetune_mgkg_replay_samples
+                / max(finetune_mgkg_target_samples + finetune_mgkg_replay_samples, 1)
+            ),
+            "toxicity_bin_loss_weight": finetune_mgkg_config.toxicity_bin_loss_weight,
+            "soil_ptox_replay_boundary_audit": finetune_mgkg_replay_audit,
+        },
+        "mgkg_residual_adapter": {
+            "enabled": use_mgkg_residual_adapter,
+            "kind": "zero_initialized_residual_bottleneck",
+            "target_name": "neg_log10_mg_kg",
+            "target_family": "solid_neglog_mg_kg",
+            "task_heads": list(mgkg_adapter_heads),
+            "bottleneck_dim": mgkg_adapter_bottleneck,
+            "zero_initialized": True,
         },
         "numeric_dim": dataset.numeric_dim(),
         "fingerprint_dim": dataset.fingerprint_dim(),
@@ -1984,12 +2242,21 @@ def apply_finetune_freeze(model: Any, mode: str) -> list[Any]:
     for parameter in model.parameters():
         parameter.requires_grad = False
 
+    residual_adapter = getattr(model, "mgkg_residual_adapter", None)
     if normalized == "heads_only":
         modules = [model.heads]
+        if residual_adapter is not None:
+            modules.append(residual_adapter)
+    elif normalized == "last_trunk":
+        modules = [model.heads, _last_parameterized_trunk_module(model)]
+        if residual_adapter is not None:
+            modules.append(residual_adapter)
     elif normalized == "heads_embeddings":
         modules = [model.heads, model.embeddings, model.adapters]
+        if residual_adapter is not None:
+            modules.append(residual_adapter)
     else:
-        allowed = "none, heads_only, heads_embeddings"
+        allowed = "none, heads_only, last_trunk, heads_embeddings"
         raise ValueError(f"Unsupported finetune freeze mode '{mode}'. Allowed values: {allowed}")
 
     for module in modules:
@@ -2000,6 +2267,145 @@ def apply_finetune_freeze(model: Any, mode: str) -> list[Any]:
     if not trainable:
         raise ValueError(f"No trainable parameters for finetune freeze mode '{mode}'.")
     return trainable
+
+
+def _last_parameterized_trunk_module(model: Any) -> Any:
+    trunk = getattr(model, "trunk", None)
+    if trunk is None:
+        raise ValueError("last_trunk freeze mode requires model.trunk.")
+    candidates = [
+        module
+        for module in trunk.modules()
+        if module is not trunk and any(True for _ in module.parameters(recurse=False))
+    ]
+    if not candidates:
+        raise ValueError("last_trunk freeze mode found no parameterized trunk layer.")
+    return candidates[-1]
+
+
+def build_finetune_parameter_groups(
+    model: Any,
+    *,
+    freeze_mode: str,
+    head_learning_rate: float,
+    trunk_learning_rate: float,
+) -> list[Any]:
+    """Freeze the requested modules and optionally assign a lower LR off-head."""
+
+    trainable = apply_finetune_freeze(model, freeze_mode)
+    if trunk_learning_rate <= 0:
+        return trainable
+
+    head_parameter_ids = {id(parameter) for parameter in model.heads.parameters()}
+    residual_adapter = getattr(model, "mgkg_residual_adapter", None)
+    if residual_adapter is not None:
+        head_parameter_ids.update(id(parameter) for parameter in residual_adapter.parameters())
+    head_parameters = [parameter for parameter in trainable if id(parameter) in head_parameter_ids]
+    trunk_parameters = [parameter for parameter in trainable if id(parameter) not in head_parameter_ids]
+    groups: list[Any] = []
+    if head_parameters:
+        groups.append({"params": head_parameters, "lr": float(head_learning_rate), "name": "head"})
+    if trunk_parameters:
+        groups.append({"params": trunk_parameters, "lr": float(trunk_learning_rate), "name": "trunk"})
+    return groups or trainable
+
+
+def optimizer_learning_rates(optimizer: Any) -> dict[str, float]:
+    rates: dict[str, float] = {}
+    for index, group in enumerate(optimizer.param_groups):
+        name = str(group.get("name", f"group_{index}"))
+        rates[name] = float(group.get("lr", 0.0))
+    return rates
+
+
+def audit_mgkg_replay_boundary(
+    samples: list[dict[str, Any]],
+    *,
+    replay_indices: list[int],
+    mgkg_indices: list[int],
+) -> dict[str, Any]:
+    """Fail closed when source replay reaches any validation/test identity."""
+
+    replay_set = set(replay_indices)
+    evaluation_indices = [
+        index
+        for index, sample in enumerate(samples)
+        if str(sample.get("split_part", "")).strip().lower()
+        in {"validation", "valid", "test", "finetune_validation", "finetune_mgkg_validation"}
+    ]
+    if replay_set & set(evaluation_indices):
+        raise ValueError("Soil pTox replay indices overlap validation/test indices.")
+
+    invalid_replay = [
+        index
+        for index in replay_indices
+        if str(samples[index].get("target_name", "")).strip() != "ptox_mol_l"
+        or str(samples[index].get("target_family", "")).strip() != "aquatic_pTox_mol_L"
+        or str(samples[index].get("medium_domain", "")).strip().lower() != "soil"
+    ]
+    invalid_mgkg = [
+        index
+        for index in mgkg_indices
+        if str(samples[index].get("target_name", "")).strip() != "neg_log10_mg_kg"
+        or str(samples[index].get("target_family", "")).strip() != "solid_neglog_mg_kg"
+        or str(samples[index].get("medium_domain", "")).strip().lower() != "soil"
+    ]
+    if invalid_replay:
+        raise ValueError(f"Replay pool contains non-soil-pTox rows: {invalid_replay[:5]}")
+    if invalid_mgkg:
+        raise ValueError(f"mg/kg target pool contains invalid rows: {invalid_mgkg[:5]}")
+
+    replay_aggregates = _sample_aggregate_ids(samples, replay_indices)
+    evaluation_aggregates = _sample_aggregate_ids(samples, evaluation_indices)
+    replay_results = _sample_result_ids(samples, replay_indices)
+    evaluation_results = _sample_result_ids(samples, evaluation_indices)
+    aggregate_overlap = replay_aggregates & evaluation_aggregates
+    result_overlap = replay_results & evaluation_results
+    if aggregate_overlap or result_overlap:
+        raise ValueError(
+            "Soil pTox replay has exact source overlap with validation/test rows: "
+            f"aggregate_id={len(aggregate_overlap)}, result_id={len(result_overlap)}"
+        )
+    return {
+        "replay_candidate_rows": len(replay_indices),
+        "evaluation_rows_checked": len(evaluation_indices),
+        "aggregate_id_overlap": 0,
+        "result_id_overlap": 0,
+        "replay_aggregate_hash": _stable_values_hash(replay_aggregates),
+        "replay_result_id_hash": _stable_values_hash(replay_results),
+    }
+
+
+def _sample_aggregate_ids(samples: list[dict[str, Any]], indices: list[int]) -> set[str]:
+    return {
+        str(samples[index].get("aggregate_id", "")).strip()
+        for index in indices
+        if str(samples[index].get("aggregate_id", "")).strip()
+    }
+
+
+def _sample_result_ids(samples: list[dict[str, Any]], indices: list[int]) -> set[str]:
+    result: set[str] = set()
+    for index in indices:
+        raw = samples[index].get("result_ids")
+        if raw in (None, ""):
+            continue
+        if isinstance(raw, str):
+            try:
+                values = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid result_ids JSON at sample index {index}.") from exc
+        else:
+            values = raw
+        if not isinstance(values, (list, tuple, set)):
+            raise ValueError(f"result_ids must be a sequence at sample index {index}.")
+        result.update(str(value).strip() for value in values if str(value).strip())
+    return result
+
+
+def _stable_values_hash(values: set[str]) -> str:
+    payload = "\n".join(sorted(values)).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 class MolecularFeatureBuilder:
@@ -3181,6 +3587,105 @@ class _IndexDataset:
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         return self.dataset[self.indices[index]]
+
+
+class _StagePoolDataset:
+    """Address target and replay pools through one index space for a batch sampler."""
+
+    def __init__(self, target_dataset: Any, replay_dataset: Any) -> None:
+        self.target_dataset = target_dataset
+        self.replay_dataset = replay_dataset
+        self.target_count = len(target_dataset)
+        self.replay_pool_count = len(replay_dataset)
+
+    def __len__(self) -> int:
+        return self.target_count + self.replay_pool_count
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        if index < self.target_count:
+            source = "mgkg"
+            source_index = index
+            dataset = self.target_dataset
+        else:
+            source = "soil_ptox_replay"
+            source_index = index - self.target_count
+            dataset = self.replay_dataset
+        sample = dict(dataset[source_index])
+        sample["finetune_mgkg_source"] = source
+        return sample
+
+
+class _TargetReplayBatchSampler:
+    """Yield batches with a fixed replay sample fraction and full target coverage."""
+
+    def __init__(
+        self,
+        *,
+        target_count: int,
+        replay_count: int,
+        batch_size: int,
+        replay_fraction: float,
+        seed: int,
+    ) -> None:
+        if target_count <= 0:
+            raise ValueError("Replay batch sampler requires target samples.")
+        if replay_count <= 0:
+            raise ValueError("Replay batch sampler requires replay samples.")
+        if batch_size < 2:
+            raise ValueError("Replay batch sampler requires batch_size >= 2.")
+        self.target_count = int(target_count)
+        self.replay_count = int(replay_count)
+        self.batch_size = int(batch_size)
+        self.replay_fraction = float(replay_fraction)
+        self.seed = int(seed)
+        self.epoch = 0
+        self.replay_per_full_batch = min(
+            max(int(round(self.batch_size * self.replay_fraction)), 1),
+            self.batch_size - 1,
+        )
+        self.target_per_full_batch = self.batch_size - self.replay_per_full_batch
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __len__(self) -> int:
+        return int(math.ceil(self.target_count / self.target_per_full_batch))
+
+    @property
+    def replay_samples_per_epoch(self) -> int:
+        total = 0
+        for start in range(0, self.target_count, self.target_per_full_batch):
+            target_batch_count = min(self.target_per_full_batch, self.target_count - start)
+            total += max(1, int(round(target_batch_count * self.replay_fraction / (1.0 - self.replay_fraction))))
+        return total
+
+    def __iter__(self) -> Any:
+        rng = np.random.default_rng(self.seed + self.epoch * 1_000_003)
+        targets = rng.permutation(self.target_count).tolist()
+        replay_cycle: list[int] = []
+        replay_position = 0
+
+        def take_replay(count: int) -> list[int]:
+            nonlocal replay_cycle, replay_position
+            selected: list[int] = []
+            while len(selected) < count:
+                if replay_position >= len(replay_cycle):
+                    replay_cycle = rng.permutation(self.replay_count).tolist()
+                    replay_position = 0
+                take = min(count - len(selected), len(replay_cycle) - replay_position)
+                selected.extend(replay_cycle[replay_position : replay_position + take])
+                replay_position += take
+            return [self.target_count + index for index in selected]
+
+        for start in range(0, self.target_count, self.target_per_full_batch):
+            target_batch = targets[start : start + self.target_per_full_batch]
+            replay_batch_count = max(
+                1,
+                int(round(len(target_batch) * self.replay_fraction / (1.0 - self.replay_fraction))),
+            )
+            batch = target_batch + take_replay(replay_batch_count)
+            rng.shuffle(batch)
+            yield batch
 
 
 class _NoisyIndexDataset:

@@ -103,6 +103,55 @@ def test_multitask_network_forward_shapes() -> None:
     assert outputs["NOEC_Growth"].shape == torch.Size([3])
 
 
+def test_mgkg_residual_adapter_is_zero_initialized_and_exactly_routed() -> None:
+    numeric = torch.tensor([[0.1, 0.2], [0.3, 0.4]], dtype=torch.float32)
+    fingerprint = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+    common = dict(
+        numeric_dim=2,
+        fingerprint_dim=2,
+        task_heads=("tox__molar_concentration_neglog", "tox__solid_neglog_mg_kg"),
+        hidden_dims=(8, 4),
+        dropout=0.0,
+    )
+    torch.manual_seed(123)
+    baseline = EcotoxMultiTaskNetwork(DeepModelConfig(**common))
+    torch.manual_seed(123)
+    adapted = EcotoxMultiTaskNetwork(
+        DeepModelConfig(
+            **common,
+            use_mgkg_residual_adapter=True,
+            mgkg_residual_adapter_bottleneck=2,
+            mgkg_residual_adapter_heads=("tox__solid_neglog_mg_kg",),
+        )
+    )
+
+    baseline_outputs = baseline(numeric, fingerprint)
+    adapted_outputs = adapted(numeric, fingerprint)
+    assert torch.equal(
+        baseline_outputs["tox__molar_concentration_neglog"],
+        adapted_outputs["tox__molar_concentration_neglog"],
+    )
+    assert torch.equal(
+        baseline_outputs["tox__solid_neglog_mg_kg"],
+        adapted_outputs["tox__solid_neglog_mg_kg"],
+    )
+
+    output_layer = adapted.mgkg_residual_adapter[-1]
+    assert torch.count_nonzero(output_layer.weight) == 0
+    assert torch.count_nonzero(output_layer.bias) == 0
+    with torch.no_grad():
+        output_layer.bias.fill_(0.5)
+    changed_outputs = adapted(numeric, fingerprint)
+    assert torch.equal(
+        adapted_outputs["tox__molar_concentration_neglog"],
+        changed_outputs["tox__molar_concentration_neglog"],
+    )
+    assert not torch.equal(
+        adapted_outputs["tox__solid_neglog_mg_kg"],
+        changed_outputs["tox__solid_neglog_mg_kg"],
+    )
+
+
 def test_censored_batch_loss_skips_regression_and_adds_hinge() -> None:
     outputs = {"ECx_Mortality": torch.tensor([2.0, 4.0], dtype=torch.float32)}
     targets = torch.tensor([2.0, 3.0], dtype=torch.float32)
