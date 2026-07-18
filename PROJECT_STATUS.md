@@ -1812,4 +1812,37 @@ python -m qsar_tl.cli run-baseline --config configs\experiment.example.yaml --db
 - 核验结果：
   - 本地测试：`E:\TOOLS\anaconda\python.exe -m pytest` 通过，95 passed、1 skipped、1 warning。
   - 配置核验：`E:\TOOLS\anaconda\python.exe -m qsar_tl.cli validate-config --config configs/experiment.remote.easyai.yaml` 通过。
-  - 远端训练进程检查未发现实际训练进程。
+- 远端训练进程检查未发现实际训练进程。
+
+## 2026-07-19 v1.2.40 paired result and v1.2.41 stage-3 optimization
+
+- v1.2.40 paired mass/molar matrix completed 16/16 runs on remote
+  `qsar-gpu-new` using seeds `42, 2042, 3407, 8417`.
+- Three-stage `X0_molar` four-seed mean native test R2 is `0.6973`.
+  Back-converted common mg/kg R2 is `0.6654` and MAE is `0.5633`.
+  The native mol/kg R2 is a valid result; the two R2 values differ because the
+  per-row `3 + log10(MW)` offset changes target variance, while paired residuals,
+  MAE, and RMSE remain unchanged.
+- Random 8:2 is the primary evaluation boundary for this heterogeneous
+  chemical-species-context model. Scaffold/similarity-cluster holdout is kept
+  as a separate structural-family boundary rather than a prerequisite for the
+  primary result.
+- v1.2.22 and the current three-stage first two stages are not protocol
+  equivalent: stage-2 epochs, learning rate, scheduler, exact-source routing,
+  and target-head/data-table contracts changed. Therefore v1.2.41 retains the
+  current four seeds instead of switching to the old v1.2.22 five-seed set.
+- v1.2.41 screening seeds are locked to the top two fixed-validation baselines:
+  `3407` and `42`. Final seed set is `42, 2042, 3407, 8417`.
+- Matrix cells:
+  - S1: stage3 40 epochs, full unfreeze, head LR `5e-4`, trunk LR `1e-4`, cosine.
+  - S2: S1 plus stage3-only SWA over epochs 31-40.
+  - S3: S2 plus standardized-target `0.7 Huber + 0.3 MSE`.
+- Stage3 early stopping is disabled to preserve the fixed 40-epoch comparison.
+  Formal validation fails closed unless S0/challenger validation `n`, aggregate
+  hash, and result-id hash are identical. The first selection pass writes only
+  validation metrics; test metrics are report-only after winner lock.
+- Local targeted QA: `70 passed`; remote targeted QA passed with one
+  environment-conditional skip. Remote smoke completed in about 6m52s.
+- Formal run started at `2026-07-19T07:11:50+08:00`, two concurrent S1 runs.
+  Controller log: `outputs/logs/v1_2_41_three_stage_optimization_matrix.log`.
+  Expected completion is approximately 2-2.5 hours after launch.
