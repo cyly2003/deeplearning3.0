@@ -98,3 +98,6 @@ def test_remote_v138_v139_launchers_preserve_paired_protocol() -> None:
         assert "seed${MODEL_SEED}" in runner
     assert "build_three_stage_ptox_to_soil_mgkg_split.py" in v139
     assert "--seed 42" in v139
+    assert 'FINETUNE_MGKG_FREEZE="${FINETUNE_MGKG_FREEZE_OVERRIDE:-none}"' in v139
+    assert '--finetune-mgkg-freeze "$FINETUNE_MGKG_FREEZE"' in v139
+    assert 'FREEZE_SUFFIX="_mgkg_${FINETUNE_MGKG_FREEZE}"' in v139

@@ -20,6 +20,11 @@ SPLIT_NAME="M_v1_2_39_ptox_to_soil_mgkg_B_random_8_2"
 AUDIT_CSV="outputs/audits/v1_2_39_ptox_to_soil_mgkg/${SPLIT_NAME}_routing_audit.csv"
 CACHE_DIR="${CACHE_DIR_OVERRIDE:-outputs/cache/source_weights}"
 MODEL_SEED="${MODEL_SEED_OVERRIDE:-42}"
+FINETUNE_MGKG_FREEZE="${FINETUNE_MGKG_FREEZE_OVERRIDE:-none}"
+case "$FINETUNE_MGKG_FREEZE" in
+  none|heads_only|heads_embeddings) ;;
+  *) echo "FINETUNE_MGKG_FREEZE_OVERRIDE must be none, heads_only, or heads_embeddings" >&2; exit 2 ;;
+esac
 
 mkdir -p "$(dirname "$AUDIT_CSV")" "$CACHE_DIR" outputs/logs
 "$PYTHON" scripts/build_three_stage_ptox_to_soil_mgkg_split.py \
@@ -49,7 +54,11 @@ else
   OUT_ROOT="${OUT_ROOT_OVERRIDE:-outputs/experiments/v1_2_39_ptox_to_soil_mgkg_3stage_remote}"
 fi
 
-RUN_NAME="${RUN_NAME_OVERRIDE:-three_stage_protocolfix_routingfix_${MODE}_full_no_adapter_random8_2_seed${MODEL_SEED}}"
+FREEZE_SUFFIX=""
+if [[ "$FINETUNE_MGKG_FREEZE" != "none" ]]; then
+  FREEZE_SUFFIX="_mgkg_${FINETUNE_MGKG_FREEZE}"
+fi
+RUN_NAME="${RUN_NAME_OVERRIDE:-three_stage_protocolfix_routingfix_${MODE}_full_no_adapter${FREEZE_SUFFIX}_random8_2_seed${MODEL_SEED}}"
 RUN_DIR="$OUT_ROOT/v1.2.39_${RUN_NAME}/deep/full/$SPLIT_NAME"
 if [[ -s "$RUN_DIR/predictions.csv" && -s "$RUN_DIR/manifest.json" && -s "$RUN_DIR/best_model.pt" ]]; then
   echo "[skip-existing] $RUN_DIR"
@@ -77,7 +86,7 @@ fi
   --finetune-learning-rate 0.0001 \
   --finetune-mgkg-learning-rate 0.0005 \
   --finetune-freeze none \
-  --finetune-mgkg-freeze none \
+  --finetune-mgkg-freeze "$FINETUNE_MGKG_FREEZE" \
   --finetune-validation-fraction 0.2 \
   --finetune-mgkg-validation-fraction 0.2 \
   --early-stopping \
