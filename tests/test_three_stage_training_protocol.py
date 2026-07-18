@@ -44,6 +44,8 @@ def test_v138_runner_disables_medium_adapters_and_uses_new_run_identity() -> Non
     )
     assert '"--no-medium-adapters"' in runner
     assert '"--no-censored-loss"' in runner
+    assert '"--monitor-split", "internal_train_fraction"' in runner
+    assert '"--validation-fraction", "0.1"' in runner
     assert '"--censored-loss",' not in runner
     assert "soil_mgkg_no_adapter_" in runner
     assert "no_censored" in runner

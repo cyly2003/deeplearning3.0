@@ -135,6 +135,10 @@ function Invoke-TrainOne {
         "--early-stopping",
         "--early-stopping-patience", "15",
         "--early-stopping-min-delta", "0.0",
+        # Select the direct mg/kg baseline only from its training rows; the
+        # held-out mg/kg test partition is never used for model selection.
+        "--monitor-split", "internal_train_fraction",
+        "--validation-fraction", "0.1",
         "--source-weighting-method", "none",
         "--source-weighting-alpha", "1.0",
         "--toxicity-binning",
