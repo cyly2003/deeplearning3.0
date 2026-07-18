@@ -9,6 +9,7 @@ OUT_ROOT="${OUT_ROOT:-outputs/experiments/v1_2_39_transfer_optimization_matrix_r
 SUMMARY_DIR="${SUMMARY_DIR:-outputs/experiments/v1_2_39_transfer_optimization_matrix_summary}"
 RUN_MULTI_SEED="${RUN_MULTI_SEED:-1}"
 RUN_PREFLIGHT="${RUN_PREFLIGHT:-1}"
+PARALLEL_JOBS="${PARALLEL_JOBS:-3}"
 SCREEN_SEED="${SCREEN_SEED:-42}"
 REFIT_SEEDS=(2042 3407 8417)
 
@@ -37,7 +38,8 @@ run_cell() {
     *) echo "Unknown matrix cell: $cell" >&2; return 2 ;;
   esac
   echo "[matrix_start] cell=$cell seed=$seed time=$(date -Is)"
-  env \
+  local cell_log="outputs/logs/transfer_matrix_${cell}_seed${seed}.log"
+  if ! env \
     MODEL_SEED_OVERRIDE="$seed" \
     OUT_ROOT_OVERRIDE="$OUT_ROOT" \
     RUN_NAME_OVERRIDE="transfer_matrix_${cell}_seed${seed}" \
@@ -51,7 +53,13 @@ run_cell() {
     FINETUNE_MGKG_TOXICITY_BIN_LOSS_WEIGHT_OVERRIDE=0 \
     MGKG_RESIDUAL_ADAPTER_OVERRIDE="$adapter" \
     MGKG_RESIDUAL_ADAPTER_BOTTLENECK_OVERRIDE="$bottleneck" \
-    bash scripts/run_v1_2_39_ptox_to_soil_mgkg_3stage_remote.sh formal
+    SKIP_SPLIT_BUILD_OVERRIDE=1 \
+    bash scripts/run_v1_2_39_ptox_to_soil_mgkg_3stage_remote.sh formal \
+    >"$cell_log" 2>&1; then
+    echo "[matrix_failed] cell=$cell seed=$seed log=$cell_log time=$(date -Is)" >&2
+    tail -n 40 "$cell_log" >&2 || true
+    return 1
+  fi
   echo "[matrix_done] cell=$cell seed=$seed time=$(date -Is)"
 }
 
@@ -73,18 +81,49 @@ run_preflight() {
     FINETUNE_MGKG_TOXICITY_BIN_LOSS_WEIGHT_OVERRIDE=0 \
     MGKG_RESIDUAL_ADAPTER_OVERRIDE="$adapter" \
     MGKG_RESIDUAL_ADAPTER_BOTTLENECK_OVERRIDE=64 \
+    SKIP_SPLIT_BUILD_OVERRIDE=1 \
     bash scripts/run_v1_2_39_ptox_to_soil_mgkg_3stage_remote.sh smoke
   echo "[preflight_done] label=$label time=$(date -Is)"
 }
+
+run_jobs_parallel() {
+  local jobs=("$@")
+  local active_pids=()
+  local failed=0
+  local job cell seed pid
+  for job in "${jobs[@]}"; do
+    cell="${job%%:*}"
+    seed="${job##*:}"
+    run_cell "$cell" "$seed" &
+    pid=$!
+    active_pids+=("$pid")
+    if (( ${#active_pids[@]} >= PARALLEL_JOBS )); then
+      if ! wait "${active_pids[0]}"; then failed=1; fi
+      active_pids=("${active_pids[@]:1}")
+    fi
+  done
+  for pid in "${active_pids[@]}"; do
+    if ! wait "$pid"; then failed=1; fi
+  done
+  if (( failed != 0 )); then
+    echo "[matrix_batch_failed] time=$(date -Is)" >&2
+    return 1
+  fi
+}
+
+# Build the shared assignment table once. Parallel jobs only read it.
+bash scripts/run_v1_2_39_ptox_to_soil_mgkg_3stage_remote.sh splits
 
 if [[ "$RUN_PREFLIGHT" == "1" ]]; then
   run_preflight T4_replay 0.25 0
   run_preflight T5_adapter 0 1
 fi
 
+SCREEN_JOBS=()
 for cell in T0 T1 T2 T3 T4 T5; do
-  run_cell "$cell" "$SCREEN_SEED"
+  SCREEN_JOBS+=("${cell}:${SCREEN_SEED}")
 done
+run_jobs_parallel "${SCREEN_JOBS[@]}"
 
 SCREEN_SUMMARY="$SUMMARY_DIR/seed${SCREEN_SEED}_validation_ranking.csv"
 "$PYTHON" scripts/summarize_v1_2_39_transfer_optimization_matrix.py \
@@ -96,11 +135,13 @@ if [[ "$RUN_MULTI_SEED" == "1" ]]; then
   mapfile -t TOP_CELLS < <(
     "$PYTHON" -c 'import csv,sys; rows=list(csv.DictReader(open(sys.argv[1],encoding="utf-8-sig"))); print("\n".join(row["matrix_cell"] for row in rows[:2]))' "$SCREEN_SUMMARY"
   )
+  REFIT_JOBS=()
   for cell in "${TOP_CELLS[@]}"; do
     for seed in "${REFIT_SEEDS[@]}"; do
-      run_cell "$cell" "$seed"
+      REFIT_JOBS+=("${cell}:${seed}")
     done
   done
+  run_jobs_parallel "${REFIT_JOBS[@]}"
 fi
 
 echo "[matrix_complete] time=$(date -Is) summary=$SCREEN_SUMMARY"

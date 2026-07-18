@@ -29,6 +29,7 @@ FINETUNE_MGKG_REPLAY_FRACTION="${FINETUNE_MGKG_REPLAY_FRACTION_OVERRIDE:-0}"
 FINETUNE_MGKG_TOXICITY_BIN_LOSS_WEIGHT="${FINETUNE_MGKG_TOXICITY_BIN_LOSS_WEIGHT_OVERRIDE:-0}"
 MGKG_RESIDUAL_ADAPTER="${MGKG_RESIDUAL_ADAPTER_OVERRIDE:-0}"
 MGKG_RESIDUAL_ADAPTER_BOTTLENECK="${MGKG_RESIDUAL_ADAPTER_BOTTLENECK_OVERRIDE:-64}"
+SKIP_SPLIT_BUILD="${SKIP_SPLIT_BUILD_OVERRIDE:-0}"
 case "$FINETUNE_MGKG_FREEZE" in
   none|heads_only|last_trunk|heads_embeddings) ;;
   *) echo "FINETUNE_MGKG_FREEZE_OVERRIDE must be none, heads_only, last_trunk, or heads_embeddings" >&2; exit 2 ;;
@@ -39,16 +40,18 @@ case "$MGKG_RESIDUAL_ADAPTER" in
 esac
 
 mkdir -p "$(dirname "$AUDIT_CSV")" "$CACHE_DIR" outputs/logs
-"$PYTHON" scripts/build_three_stage_ptox_to_soil_mgkg_split.py \
-  --db "$DB" \
-  --source-table "$SOURCE_TABLE" \
-  --soil-ptox-source-table "$SOIL_PTOX_TABLE" \
-  --soil-ptox-split-name SoilPtoxQC2_B_random_8_2 \
-  --soil-mgkg-source-table "$SOIL_MGKG_TABLE" \
-  --soil-mgkg-split-name SoilMgkgQC2_B_random_8_2 \
-  --split-name "$SPLIT_NAME" \
-  --audit-csv "$AUDIT_CSV" \
-  --seed 42
+if [[ "$SKIP_SPLIT_BUILD" != "1" ]]; then
+  "$PYTHON" scripts/build_three_stage_ptox_to_soil_mgkg_split.py \
+    --db "$DB" \
+    --source-table "$SOURCE_TABLE" \
+    --soil-ptox-source-table "$SOIL_PTOX_TABLE" \
+    --soil-ptox-split-name SoilPtoxQC2_B_random_8_2 \
+    --soil-mgkg-source-table "$SOIL_MGKG_TABLE" \
+    --soil-mgkg-split-name SoilMgkgQC2_B_random_8_2 \
+    --split-name "$SPLIT_NAME" \
+    --audit-csv "$AUDIT_CSV" \
+    --seed 42
+fi
 
 if [[ "$MODE" == "splits" ]]; then
   exit 0
