@@ -226,6 +226,10 @@ def split_policy_label(split_name: str) -> str:
         return "random_8_2"
     if "adapt_E_random_5fold" in split_name or "E_random_5fold" in split_name:
         return "random_5fold"
+    if "adapt_G_scaffold_cluster_8_2" in split_name or "G_scaffold_cluster_8_2" in split_name:
+        return "scaffold_cluster_8_2"
+    if "adapt_H_scaffold_cluster_5fold" in split_name or "H_scaffold_cluster_5fold" in split_name:
+        return "scaffold_cluster_5fold"
     return "other"
 
 

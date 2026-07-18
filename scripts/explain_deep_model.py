@@ -181,6 +181,13 @@ def load_model(run_dir: Path, *, manifest: dict[str, Any], preprocessing: dict[s
 
     hidden_dim = int(config.get("model", {}).get("hidden_dim", 256))
     ablation_features = manifest.get("ablation_features", {}) or {}
+    descriptor_names = tuple(preprocessing.get("molecular_descriptor_names", []))
+    descriptor_encoder = preprocessing.get("descriptor_encoder", {}) or manifest.get("descriptor_encoder", {}) or {}
+    descriptor_groups = {
+        str(key): tuple(int(index) for index in value)
+        for key, value in (descriptor_encoder.get("groups", {}) or {}).items()
+        if isinstance(value, list)
+    }
     model = EcotoxMultiTaskNetwork(
         DeepModelConfig(
             numeric_dim=len(preprocessing["numeric_feature_names"]),
@@ -189,6 +196,11 @@ def load_model(run_dir: Path, *, manifest: dict[str, Any], preprocessing: dict[s
                 key: int(value) for key, value in manifest.get("categorical_cardinalities", {}).items()
             },
             adapter_count=int(manifest.get("adapter_cardinality", preprocessing.get("adapter_cardinality", 0))),
+            descriptor_count=int(len(descriptor_names)),
+            descriptor_encoder_mode=str(descriptor_encoder.get("mode", "raw")),
+            descriptor_head_dim=int(descriptor_encoder.get("head_dim", 64)),
+            descriptor_group_head_dim=int(descriptor_encoder.get("group_head_dim", 16)),
+            descriptor_group_indices=descriptor_groups,
             task_heads=tuple(manifest["task_heads"]),
             hidden_dims=(hidden_dim, max(32, hidden_dim // 2)),
             dropout=float(config.get("model", {}).get("dropout", 0.15)),

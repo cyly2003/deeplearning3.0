@@ -1,0 +1,59 @@
+schema_version: 1
+description: >
+  Prior descriptor grouping template for PaDEL descriptors. Exact names are
+  matched first; prefixes/contains/regex rules let the same file cover PaDEL
+  variants while keeping group membership auditable in preprocessing.json.
+
+descriptor_groups:
+  constitution_size:
+    names:
+      - MW
+      - AMW
+      - nAtom
+      - nHeavyAtom
+    prefixes:
+      - nC
+      - nN
+      - nO
+      - nS
+      - nP
+  hydrophobicity_partition:
+    names:
+      - ALogP
+      - XLogP
+      - MLogP
+      - CrippenLogP
+    contains:
+      - logp
+  polarity_surface:
+    names:
+      - TopoPSA
+      - TPSA
+    contains:
+      - psa
+  topology_connectivity:
+    prefixes:
+      - Kier
+      - Chi
+      - ATS
+      - AATS
+      - ATSC
+  charge_electronic:
+    contains:
+      - charge
+      - electr
+    prefixes:
+      - BCUT
+  rings_flexibility:
+    names:
+      - nRing
+      - nRotB
+      - RotBFrac
+    contains:
+      - ring
+      - rotatable
+  autocorrelation_vsa:
+    prefixes:
+      - MATS
+      - GATS
+      - VSA

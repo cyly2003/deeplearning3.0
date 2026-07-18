@@ -1,0 +1,335 @@
+project:
+  name: ecotox_qsar_transfer_easyai_remote
+  seed: 42
+
+paths:
+  sqlite_db: ecotox_clean.sqlite
+  output_dir: outputs/experiments/easyai_remote
+  logs_dir: outputs/logs
+
+execution:
+  mode: remote
+  remote:
+    host: i.easy-ai.cloud
+    alternate_hosts:
+      - b.easy-ai.cloud
+    port: 32136
+    user: easyai
+    project_dir: /home/easyai/DL1/ecotox_qsar_transfer
+    python: /opt/anaconda3/bin/python
+    conda: /opt/anaconda3/bin/conda
+    sync_data: true
+    pull_outputs: true
+
+data:
+  field_mapping: configs/field_mapping.ecotox_clean.yaml
+  modeling_tables_db: outputs/derived/modeling_dataset_v2_0_0_rebuild.sqlite
+  build_batch_size: 10000
+  build_wide_table: true
+  aggregation:
+    strategy: strict_duration_tolerance
+    duration_tolerance_relative: 0.002
+    duration_tolerance_hours_min: 0.05
+  qc_aggregation:
+    source_table: task_records
+    qc_task_table: task_records_qc
+    aggregate_table: aggregated_task_records_qc
+    min_outlier_group_n: 50
+    robust_z_threshold: 4.0
+    conflict_threshold_log_unit: 0.3
+  duration_imputation:
+    strategy: standard_rule_then_group_mode
+    rules_table: configs/duration_rules.example.csv
+
+targets:
+  toxicity:
+    value_rule: mean_then_min_max_midpoint
+    ignore_qualifiers: true
+  medium_units:
+    minimum_modeling_rows: 100
+    aquatic:
+      model_target: ptox_mol_l
+      recommended_source_table: aggregated_task_records_aquatic_ptox_qc
+      broad_source_table: aggregated_task_records_aquatic
+      export_units:
+        - mg/L
+        - mol/L
+    soil:
+      model_target: neg_log10_mg_kg
+      recommended_source_table: aggregated_task_records_soil_mg_kg_qc
+      ptox_reference_table: aggregated_task_records_soil_ptox_qc
+      broad_source_table: aggregated_task_records_soil
+      export_units:
+        - mg/kg
+    sediment:
+      modeling_status: too_few_rows
+      recommended_source_table: null
+      ptox_reference_table: aggregated_task_records_sediment_ptox
+      mg_kg_reference_table: aggregated_task_records_sediment_mg_kg
+      export_units:
+        - mg/kg
+    oral:
+      model_target: neg_log10_mg_kg_bw
+      task_group: auxiliary
+
+features:
+  molecule:
+    encoder: rdkit_descriptor_morgan
+    encoder_source: padel_descriptor_morgan
+    descriptor_encoder_mode: raw
+    descriptor_cluster_file: configs/padel_descriptor_clusters.example.yaml
+    morgan_radius: 2
+    morgan_n_bits: 512
+  species:
+    encoder: taxonomy_context
+    taxonomy_levels:
+      - kingdom
+      - phylum
+      - class
+      - order
+      - family
+      - genus
+      - species
+    context_fields:
+      - life_stage
+      - habitat
+      - primary_medium
+      - exposure_route
+      - duration_h
+      - log1p_duration_h
+
+tasks:
+  main_heads:
+    - ECx_Mortality
+    - ECx_Growth
+    - ECx_Reproduction
+    - NOEC_Growth
+    - LOEC_Reproduction
+  auxiliary_heads:
+    bioaccumulation:
+      enabled: true
+      heads:
+        - logBCF
+        - logBAF
+      loss_mask: observed_only
+    oral:
+      enabled: true
+      target: neg_log10_mg_kg_bw
+
+model:
+  hidden_dim: 256
+  dropout: 0.15
+  activation: gelu
+  use_medium_adapters: true
+
+training:
+  device: cuda:0
+  batch_size: 256
+  epochs: 30
+  learning_rate: 0.0005
+  optimizer: adamw
+  weight_decay: 0.0001
+  scheduler: cosine
+  gradient_clip_norm: 5.0
+  target_standardization: per_task_target
+  feature_zscore_correction:
+    enabled: true
+    threshold: 6.0
+  effect_level_weighting:
+    enabled: false
+    beta: 0.5
+    split_parts:
+      - train
+      - finetune
+    task_prefixes:
+      - ECx
+      - LCx
+      - ICx
+      - LDx
+    min_weight: 0.5
+    max_weight: 3.0
+  toxicity_binning:
+    enabled: false
+    scheme: authority_v1
+    mode: aux_classification
+    loss_weight: 0.05
+    boundary_policy: hard
+    boundary_tolerance: 0.05
+    threshold_multiplier: 1.0
+    require_active_bin_for_regression: false
+  censored_loss:
+    enabled: false
+    method: hinge
+    weight: 0.0
+    margin: 0.0
+    split_parts:
+      - train
+      - finetune
+    include_ops:
+      - "<"
+      - "<="
+      - ">"
+      - ">="
+  proxy_transfer:
+    enabled: false
+    method: none
+  domain_alignment:
+    enabled: false
+    method: none
+    weight: 0.0
+  task_weighting: balanced
+  main_task_weight: 1.0
+  toxicity_aux_task_weight: 0.35
+  bioaccumulation_aux_task_weight: 0.2
+  task_weight_exponent: 0.5
+  task_weight_min: 0.25
+  task_weight_max: 4.0
+  categorical_min_count: 2
+  num_workers: 4
+  loss:
+    name: huber
+    delta: 1.0
+  early_stopping:
+    enabled: true
+    patience: 15
+    min_delta: 0.0
+    validation_fraction: 0.1
+    monitor_split: auto
+  finetune:
+    validation_fraction: 0.2
+    early_stopping: true
+    early_stopping_patience: 10
+    early_stopping_min_delta: 0.0
+    monitor_split: auto
+  augmentation:
+    train_replicates: 1
+    finetune_replicates: 1
+    numeric_noise_std: 0.0
+    target_noise_std: 0.0
+  test_perturbation:
+    enabled: false
+    split_parts:
+      - test
+    replicates: 1
+    numeric_noise_std: 0.0
+  task_weights:
+    ECx_Mortality: 1.0
+    ECx_Growth: 1.0
+    ECx_Reproduction: 1.0
+    NOEC_Growth: 1.0
+    LOEC_Reproduction: 1.0
+    logBCF: 0.3
+    logBAF: 0.3
+    oral: 0.3
+
+reporting:
+  min_metric_group_n: 5
+
+experiment:
+  version: v1.0.0
+  name_zh: PaDEL描述符分子信号强度探索_远程实验
+  style_config: style_journal_clean_v1.yaml
+  molecular_feature_cache: outputs/features/molecular_features_padel_morgan512.jsonl
+  task_filter:
+    min_total: 200
+    min_train: 100
+    min_eval: 30
+    min_fold_test: 20
+  duration_features:
+    raw: true
+    log1p: true
+    sqrt: true
+    inverse_log1p: true
+    rbf:
+      enabled: true
+      centers_h:
+        - 24
+        - 48
+        - 96
+        - 168
+        - 336
+        - 720
+      gamma: 0.35
+  splits:
+    A:
+      name: random_adapt_7_2_1
+      description: "7:2:1 train:fine_tune:validation, chemicals unrestricted"
+      type: random_adapt_split
+      fractions:
+        train: 0.7
+        finetune: 0.2
+        test: 0.1
+    B:
+      name: random_8_2
+      description: "8:2 train:test random split, chemicals unrestricted"
+      type: random_holdout_split
+      fractions:
+        train: 0.8
+        test: 0.2
+    C:
+      name: chemical_holdout_8_2
+      description: "8:2 train:test strict chemical holdout"
+      type: chemical_holdout_split
+      fractions:
+        train: 0.8
+        test: 0.2
+    D:
+      name: chemical_group_5fold
+      description: "5-fold CV, strict chemicals do not cross folds"
+      type: chemical_group_kfold
+      folds: 5
+    E:
+      name: random_5fold
+      description: "5-fold random CV, unrestricted"
+      type: random_kfold
+      folds: 5
+    F:
+      name: chemical_adapt_7_2_1
+      description: "7:2:1 train:fine_tune:validation, strict chemicals do not leak to validation"
+      type: chemical_adapt_split
+      fractions:
+        train: 0.7
+        finetune: 0.2
+        test: 0.1
+  baselines:
+    huber_delta: 1.0
+    models:
+      - random_forest
+      - xgboost
+      - lightgbm
+      - pls
+      - extra_trees
+      - elastic_net
+      - mlp
+
+evaluation:
+  splits:
+    - random_split
+    - chemical_group_split
+    - species_group_split
+    - chemical_species_group_split
+    - medium_transfer_split
+  metrics:
+    - r2
+    - rmse
+    - mae
+    - huber_loss
+  explainability:
+    enabled: true
+    methods:
+      - permutation_importance
+      - shap
+  application_domain:
+    enabled: false
+    chemical:
+      williams_leverage: true
+      tanimoto_threshold: 0.5
+      fingerprint_pca_components: 32
+    species:
+      taxon_columns:
+        - kingdom
+        - phylum
+        - class_name
+        - tax_order
+        - family
+      taxon_similarity_threshold: 0.8
