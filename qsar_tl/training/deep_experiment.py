@@ -561,10 +561,12 @@ def run_deep_experiment(
     finetune_mgkg_freeze: str | None = None,
     finetune_mgkg_validation_fraction: float | None = None,
     finetune_mgkg_validation_seed: int | None = None,
+    finetune_mgkg_early_stopping: bool | None = None,
     finetune_mgkg_head_only_epochs: int | None = None,
     finetune_mgkg_trunk_learning_rate: float | None = None,
     finetune_mgkg_replay_fraction: float | None = None,
     finetune_mgkg_toxicity_bin_loss_weight: float | None = None,
+    finetune_mgkg_mse_loss_weight: float | None = None,
     mgkg_residual_adapter: bool | None = None,
     mgkg_residual_adapter_bottleneck: int | None = None,
     head_routing: str | None = None,
@@ -597,6 +599,7 @@ def run_deep_experiment(
     domain_alignment_weight: float | None = None,
     swa_enabled: bool | None = None,
     swa_start_epoch: int | None = None,
+    swa_phase: str | None = None,
 ) -> DeepExperimentResult:
     import torch
     from torch.utils.data import DataLoader
@@ -719,6 +722,7 @@ def run_deep_experiment(
         train_cfg,
         enabled_override=swa_enabled,
         start_epoch_override=swa_start_epoch,
+        phase_override=swa_phase,
     )
     requested_finetune_epochs = int(
         finetune_epochs if finetune_epochs is not None else finetune_cfg.get("epochs", 0)
@@ -1069,6 +1073,7 @@ def run_deep_experiment(
         batch_size=int(batch_size or train_cfg.get("batch_size", 256)),
         learning_rate=float(learning_rate if learning_rate is not None else train_cfg.get("learning_rate", 3e-4)),
         huber_delta=float(loss_cfg.get("delta", 1.0)),
+        mse_loss_weight=float(loss_cfg.get("mse_weight", 0.0)),
         task_weights=task_weights,
         optimizer=str(train_cfg.get("optimizer", "adamw")),
         weight_decay=float(weight_decay if weight_decay is not None else train_cfg.get("weight_decay", 1e-4)),
@@ -1091,6 +1096,7 @@ def run_deep_experiment(
             else finetune_cfg.get("learning_rate", train_config.learning_rate * 0.2)
         ),
         huber_delta=train_config.huber_delta,
+        mse_loss_weight=train_config.mse_loss_weight,
         task_weights=train_config.task_weights,
         optimizer=str(finetune_cfg.get("optimizer", train_config.optimizer)),
         weight_decay=float(finetune_cfg.get("weight_decay", train_config.weight_decay)),
@@ -1116,6 +1122,11 @@ def run_deep_experiment(
             else finetune_mgkg_cfg.get("learning_rate", finetune_config.learning_rate * 0.5)
         ),
         huber_delta=train_config.huber_delta,
+        mse_loss_weight=float(
+            finetune_mgkg_mse_loss_weight
+            if finetune_mgkg_mse_loss_weight is not None
+            else finetune_mgkg_cfg.get("mse_loss_weight", train_config.mse_loss_weight)
+        ),
         task_weights=train_config.task_weights,
         optimizer=str(finetune_mgkg_cfg.get("optimizer", finetune_config.optimizer)),
         weight_decay=float(finetune_mgkg_cfg.get("weight_decay", finetune_config.weight_decay)),
@@ -1148,7 +1159,9 @@ def run_deep_experiment(
     model.to(torch_device)
     optimizer = build_optimizer(model.parameters(), train_config)
     scheduler = build_scheduler(optimizer, train_config, train_config.epochs)
-    loss_fn = torch.nn.HuberLoss(delta=train_config.huber_delta, reduction="mean")
+    loss_fn = build_regression_loss(train_config)
+    finetune_loss_fn = build_regression_loss(finetune_config)
+    finetune_mgkg_loss_fn = build_regression_loss(finetune_mgkg_config)
     swa_model: Any | None = None
     swa_updates = 0
     swa_last_global_epoch = 0
@@ -1344,7 +1357,7 @@ def run_deep_experiment(
                 model,
                 finetune_loader,
                 optimizer,
-                loss_fn,
+                finetune_loss_fn,
                 finetune_config,
                 torch_device,
                 alignment_batches=finetune_alignment_batches,
@@ -1354,7 +1367,13 @@ def run_deep_experiment(
             finetune_ran = epoch
             global_epoch = len(history) + 1
             finetune_validation_loss = (
-                evaluate_loss(model, finetune_validation_loader, loss_fn, finetune_config, torch_device)
+                evaluate_loss(
+                    model,
+                    finetune_validation_loader,
+                    finetune_loss_fn,
+                    finetune_config,
+                    torch_device,
+                )
                 if finetune_validation_loader is not None
                 else None
             )
@@ -1437,9 +1456,13 @@ def run_deep_experiment(
     finetune_mgkg_target_per_full_batch = 0
     finetune_mgkg_replay_per_full_batch = 0
     finetune_mgkg_replay_audit: dict[str, Any] = {}
+    finetune_mgkg_early_requested = bool(
+        finetune_mgkg_cfg.get("early_stopping", True)
+        if finetune_mgkg_early_stopping is None
+        else finetune_mgkg_early_stopping
+    )
     finetune_mgkg_early_enabled = bool(
-        finetune_mgkg_validation_indices
-        and bool(finetune_mgkg_cfg.get("early_stopping", True))
+        finetune_mgkg_validation_indices and finetune_mgkg_early_requested
     )
     finetune_mgkg_patience = int(
         finetune_mgkg_cfg.get("early_stopping_patience", finetune_patience)
@@ -1594,7 +1617,7 @@ def run_deep_experiment(
                 model,
                 finetune_mgkg_loader,
                 optimizer,
-                loss_fn,
+                finetune_mgkg_loss_fn,
                 finetune_mgkg_config,
                 torch_device,
             )
@@ -1604,7 +1627,7 @@ def run_deep_experiment(
                 evaluate_loss(
                     model,
                     finetune_mgkg_validation_loader,
-                    loss_fn,
+                    finetune_mgkg_loss_fn,
                     finetune_mgkg_config,
                     torch_device,
                 )
@@ -1660,8 +1683,15 @@ def run_deep_experiment(
                     if finetune_mgkg_loader is finetune_mgkg_replay_loader
                     else 0
                 ),
-                "swa_updates": 0,
+                "swa_updates": swa_updates,
             }
+            if should_update_swa(swa_cfg, phase="finetune_mgkg", epoch=epoch):
+                if swa_model is None:
+                    swa_model = torch.optim.swa_utils.AveragedModel(model)
+                swa_model.update_parameters(model)
+                swa_updates += 1
+                swa_last_global_epoch = global_epoch
+                row["swa_updates"] = swa_updates
             history.append(row)
             step_scheduler(scheduler, monitor_loss)
             best_epoch = finetune_mgkg_best_epoch
@@ -1858,6 +1888,11 @@ def run_deep_experiment(
         "weight_decay": train_config.weight_decay,
         "gradient_clip_norm": train_config.gradient_clip_norm,
         "scheduler": train_config.scheduler,
+        "regression_loss": {
+            "kind": "huber_mse_hybrid" if train_config.mse_loss_weight > 0 else "huber",
+            "huber_delta": train_config.huber_delta,
+            "mse_weight": train_config.mse_loss_weight,
+        },
         "target_standardization": target_scaler.to_manifest(),
         "feature_zscore_correction": zscore_correction.to_manifest(),
         "metric_reporting": {
@@ -1914,6 +1949,7 @@ def run_deep_experiment(
             "validation_rows": len(finetune_mgkg_validation_indices),
             "validation_source": finetune_mgkg_validation_source,
             "early_stopping": finetune_mgkg_early_enabled,
+            "early_stopping_requested": finetune_mgkg_early_requested,
             "early_stopping_patience": finetune_mgkg_patience,
             "early_stopping_min_delta": finetune_mgkg_min_delta,
             "learning_rate": finetune_mgkg_config.learning_rate,
@@ -1951,6 +1987,15 @@ def run_deep_experiment(
                 / max(finetune_mgkg_target_samples + finetune_mgkg_replay_samples, 1)
             ),
             "toxicity_bin_loss_weight": finetune_mgkg_config.toxicity_bin_loss_weight,
+            "regression_loss": {
+                "kind": (
+                    "huber_mse_hybrid"
+                    if finetune_mgkg_config.mse_loss_weight > 0
+                    else "huber"
+                ),
+                "huber_delta": finetune_mgkg_config.huber_delta,
+                "mse_weight": finetune_mgkg_config.mse_loss_weight,
+            },
             "soil_ptox_replay_boundary_audit": finetune_mgkg_replay_audit,
         },
         "mgkg_residual_adapter": {
@@ -4581,13 +4626,17 @@ def _swa_config(
     *,
     enabled_override: bool | None = None,
     start_epoch_override: int | None = None,
+    phase_override: str | None = None,
 ) -> SwaConfig:
     raw = train_cfg.get("swa", {}) if isinstance(train_cfg.get("swa", {}), dict) else {}
     enabled = bool(raw.get("enabled", False) if enabled_override is None else enabled_override)
     start_epoch = max(1, int(start_epoch_override if start_epoch_override is not None else raw.get("start_epoch", 15)))
     return SwaConfig(
         enabled=enabled,
-        phase=str(raw.get("phase", "finetune")).strip().lower() or "finetune",
+        phase=str(
+            phase_override if phase_override is not None else raw.get("phase", "finetune")
+        ).strip().lower()
+        or "finetune",
         start_epoch=start_epoch,
     )
 
@@ -4738,6 +4787,45 @@ def step_scheduler(scheduler: Any | None, metric: float) -> None:
 
 def current_learning_rate(optimizer: Any) -> float:
     return float(optimizer.param_groups[0].get("lr", 0.0)) if optimizer.param_groups else 0.0
+
+
+def build_regression_loss(config: DeepTrainingConfig) -> Any:
+    """Build the stage-local standardized-target regression objective."""
+
+    import torch
+
+    mse_weight = float(config.mse_loss_weight)
+    if not 0.0 <= mse_weight <= 1.0:
+        raise ValueError("mse_loss_weight must be in [0, 1].")
+
+    def loss_fn(predictions: Any, targets: Any) -> Any:
+        losses = elementwise_regression_loss(predictions, targets, config=config)
+        return losses.mean()
+
+    return loss_fn
+
+
+def elementwise_regression_loss(
+    predictions: Any,
+    targets: Any,
+    *,
+    config: DeepTrainingConfig,
+) -> Any:
+    """Return Huber/MSE loss per row so sample weighting remains exact."""
+
+    import torch
+
+    mse_weight = float(config.mse_loss_weight)
+    huber = torch.nn.functional.huber_loss(
+        predictions,
+        targets,
+        reduction="none",
+        delta=float(config.huber_delta),
+    )
+    if mse_weight <= 0:
+        return huber
+    mse = torch.nn.functional.mse_loss(predictions, targets, reduction="none")
+    return (1.0 - mse_weight) * huber + mse_weight * mse
 
 
 def _optional_float(value: Any) -> float | None:
@@ -5079,12 +5167,7 @@ def masked_huber_loss(
 
     if sample_weights is None:
         return loss_fn(predictions, targets)
-    losses = torch.nn.functional.huber_loss(
-        predictions,
-        targets,
-        reduction="none",
-        delta=float(config.huber_delta),
-    )
+    losses = elementwise_regression_loss(predictions, targets, config=config)
     weights = sample_weights.to(device=losses.device, dtype=losses.dtype).clamp(min=0.0)
     weight_sum = weights.sum()
     if float(weight_sum.detach().cpu()) <= 0:

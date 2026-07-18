@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from qsar_tl.training.deep_experiment import resolve_stage1_monitor_split
+from qsar_tl.training.deep_experiment import (
+    SwaConfig,
+    build_regression_loss,
+    resolve_stage1_monitor_split,
+    should_update_swa,
+)
+from qsar_tl.training.deep_train import DeepTrainingConfig
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,3 +107,51 @@ def test_remote_v138_v139_launchers_preserve_paired_protocol() -> None:
     assert 'FINETUNE_MGKG_FREEZE="${FINETUNE_MGKG_FREEZE_OVERRIDE:-none}"' in v139
     assert '--finetune-mgkg-freeze "$FINETUNE_MGKG_FREEZE"' in v139
     assert 'FREEZE_SUFFIX="_mgkg_${FINETUNE_MGKG_FREEZE}"' in v139
+
+
+def test_stage_local_huber_mse_hybrid_matches_declared_weights() -> None:
+    torch = pytest.importorskip("torch")
+    predictions = torch.tensor([0.0, 2.0])
+    targets = torch.tensor([0.0, 0.0])
+    config = DeepTrainingConfig(huber_delta=1.0, mse_loss_weight=0.3)
+    loss = build_regression_loss(config)(predictions, targets)
+    huber = torch.nn.functional.huber_loss(predictions, targets, delta=1.0)
+    mse = torch.nn.functional.mse_loss(predictions, targets)
+    assert float(loss) == pytest.approx(0.7 * float(huber) + 0.3 * float(mse))
+
+
+def test_stage3_swa_updates_only_in_requested_phase() -> None:
+    config = SwaConfig(enabled=True, phase="finetune_mgkg", start_epoch=31)
+    assert not should_update_swa(config, phase="pretrain", epoch=40)
+    assert not should_update_swa(config, phase="finetune", epoch=40)
+    assert not should_update_swa(config, phase="finetune_mgkg", epoch=30)
+    assert sum(
+        should_update_swa(config, phase="finetune_mgkg", epoch=epoch)
+        for epoch in range(1, 41)
+    ) == 10
+
+
+def test_v141_runner_locks_stage3_protocol_and_validation_only_selection() -> None:
+    runner = (
+        ROOT / "scripts" / "run_v1_2_41_three_stage_optimization_matrix_remote.sh"
+    ).read_text(encoding="utf-8")
+    summary = (
+        ROOT / "scripts" / "summarize_v1_2_41_three_stage_optimization.py"
+    ).read_text(encoding="utf-8")
+
+    assert "STAGE1_EPOCHS=30" in runner
+    assert "STAGE2_EPOCHS=20" in runner
+    assert "STAGE3_EPOCHS=40" in runner
+    assert "--finetune-mgkg-trunk-learning-rate 0.0001" in runner
+    assert "--no-finetune-mgkg-early-stopping" in runner
+    assert "--swa-phase finetune_mgkg" in runner
+    assert "--swa-start-epoch 31" in runner
+    assert "--finetune-mgkg-mse-loss-weight 0.3" in runner
+    assert "SCREEN_SEEDS=(3407 42)" in runner
+    assert "FINAL_SEEDS=(42 2042 3407 8417)" in runner
+    assert 'for candidate in "${CANDIDATES[@]}"' in runner
+    assert '"selection_uses_test": False' in summary
+    assert 'row["evaluation_part"] == "validation"' in summary
+    assert "--selection-only" in runner
+    assert "assert_validation_identities" in summary
+    assert '"result_ids_sha256"' in summary

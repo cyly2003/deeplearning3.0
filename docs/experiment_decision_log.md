@@ -571,3 +571,38 @@ target scale as a separate soil-only model without pTox-to-mg/kg matching. This
 is positive random-split feasibility evidence, not yet external-generalization
 or risk-limit evidence. The next defensible expansion is multi-seed stability
 and scaffold/similarity-cluster validation on `aggregated_task_records_soil_mg_kg_qc`.
+
+### v1.2.40 paired mass/molar result and v1.2.41 stage-3 optimization
+
+Evaluation boundary: for the present model, the primary empirical evaluation
+is the locked random 8:2 split because the prediction function combines a broad
+chemical space with species, life-stage, endpoint, duration, and medium
+context. Scaffold or similarity-cluster holdout remains a separate optional
+question about unseen structural families; it is not a gate for interpreting
+the primary heterogeneous chemical-species model.
+
+Scale interpretation: the v1.2.40 three-stage mol/kg branch reached a four-seed
+mean native test R2 of 0.6973. This is a valid native mol/kg result, not an
+insufficient result. The paired conversion adds the sample-specific term
+`3 + log10(MW)`, so back-conversion leaves prediction residuals, MAE, and RMSE
+unchanged but changes the target variance and therefore R2. Native mol/kg and
+back-converted mg/kg R2 must consequently be reported side by side rather than
+treated as the same metric.
+
+Seed decision: v1.2.22 used `42, 1042, 2042, 3042, 4042`, but its first two
+stages differ materially from the current pipeline. The current stage 2 uses
+20 epochs, LR 1e-4, and cosine scheduling, whereas v1.2.22 used 60 epochs,
+approximately 3.08e-4, and ReduceLROnPlateau; the current split also includes
+the exact-source routing correction and new target-head/data-table contract.
+Therefore v1.2.41 retains the completed v1.2.40 seeds
+`42, 2042, 3407, 8417`. Fixed validation ranks `3407` and `42` highest, so they
+are locked as screening seeds without consulting challenger test metrics.
+
+Matrix: S1 keeps stage 1/2 at 30/20 epochs and changes only stage 3 to 40
+epochs with full unfreezing, head LR 5e-4, trunk LR 1e-4, and a new cosine
+cycle. S2 adds stage-3-only SWA across epochs 31-40. S3 adds a standardized
+target loss of 0.7 Huber plus 0.3 MSE. Stage-3 early stopping is disabled so
+all candidates receive the same 40-epoch budget. A challenger is eligible only
+if its two-seed mean validation native R2 increases and validation native MAE
+decreases relative to S0. The eligible model with the lowest validation MAE is
+locked, then expanded to seeds 2042 and 8417; test metrics are report-only.

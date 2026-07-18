@@ -25,6 +25,7 @@ class DeepTrainingConfig:
     batch_size: int = 32
     learning_rate: float = 1e-3
     huber_delta: float = 1.0
+    mse_loss_weight: float = 0.0
     task_weights: Mapping[str, float] = field(default_factory=dict)
     optimizer: str = "adamw"
     weight_decay: float = 1e-4

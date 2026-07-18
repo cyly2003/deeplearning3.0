@@ -75,10 +75,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--finetune-mgkg-validation-fraction", type=float, default=None)
     parser.add_argument("--finetune-mgkg-validation-seed", type=int, default=None)
+    parser.add_argument(
+        "--finetune-mgkg-early-stopping",
+        dest="finetune_mgkg_early_stopping",
+        action="store_true",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-finetune-mgkg-early-stopping",
+        dest="finetune_mgkg_early_stopping",
+        action="store_false",
+    )
     parser.add_argument("--finetune-mgkg-head-only-epochs", type=int, default=None)
     parser.add_argument("--finetune-mgkg-trunk-learning-rate", type=float, default=None)
     parser.add_argument("--finetune-mgkg-replay-fraction", type=float, default=None)
     parser.add_argument("--finetune-mgkg-toxicity-bin-loss-weight", type=float, default=None)
+    parser.add_argument("--finetune-mgkg-mse-loss-weight", type=float, default=None)
     parser.add_argument(
         "--mgkg-residual-adapter",
         dest="mgkg_residual_adapter",
@@ -148,6 +160,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--swa", dest="swa_enabled", action="store_true", default=None)
     parser.add_argument("--no-swa", dest="swa_enabled", action="store_false")
     parser.add_argument("--swa-start-epoch", type=int, default=None)
+    parser.add_argument(
+        "--swa-phase",
+        default=None,
+        choices=["pretrain", "finetune", "finetune_mgkg"],
+    )
     return parser
 
 
@@ -212,10 +229,12 @@ def main() -> None:
         finetune_mgkg_freeze=args.finetune_mgkg_freeze,
         finetune_mgkg_validation_fraction=args.finetune_mgkg_validation_fraction,
         finetune_mgkg_validation_seed=args.finetune_mgkg_validation_seed,
+        finetune_mgkg_early_stopping=args.finetune_mgkg_early_stopping,
         finetune_mgkg_head_only_epochs=args.finetune_mgkg_head_only_epochs,
         finetune_mgkg_trunk_learning_rate=args.finetune_mgkg_trunk_learning_rate,
         finetune_mgkg_replay_fraction=args.finetune_mgkg_replay_fraction,
         finetune_mgkg_toxicity_bin_loss_weight=args.finetune_mgkg_toxicity_bin_loss_weight,
+        finetune_mgkg_mse_loss_weight=args.finetune_mgkg_mse_loss_weight,
         mgkg_residual_adapter=args.mgkg_residual_adapter,
         mgkg_residual_adapter_bottleneck=args.mgkg_residual_adapter_bottleneck,
         head_routing=args.head_routing,
@@ -245,6 +264,7 @@ def main() -> None:
         domain_alignment_weight=args.domain_alignment_weight,
         swa_enabled=args.swa_enabled,
         swa_start_epoch=args.swa_start_epoch,
+        swa_phase=args.swa_phase,
     )
     print(f"Deep training complete: {result.out_dir.resolve()}")
     print(f"Metrics: {result.metrics_path.resolve()}")
