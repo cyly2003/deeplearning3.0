@@ -92,3 +92,9 @@ def test_remote_v138_v139_launchers_preserve_paired_protocol() -> None:
     assert "--source-weight-cache-dir" in v139
     assert "--finetune-mgkg-epochs" in v139
     assert "--audit-csv" in v139
+    for runner in (v138, v139):
+        assert 'MODEL_SEED="${MODEL_SEED_OVERRIDE:-42}"' in runner
+        assert '--seed "$MODEL_SEED"' in runner
+        assert "seed${MODEL_SEED}" in runner
+    assert "build_three_stage_ptox_to_soil_mgkg_split.py" in v139
+    assert "--seed 42" in v139

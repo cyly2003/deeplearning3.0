@@ -19,6 +19,7 @@ SOIL_MGKG_TABLE="aggregated_task_records_soil_mg_kg_qc"
 SPLIT_NAME="M_v1_2_39_ptox_to_soil_mgkg_B_random_8_2"
 AUDIT_CSV="outputs/audits/v1_2_39_ptox_to_soil_mgkg/${SPLIT_NAME}_routing_audit.csv"
 CACHE_DIR="${CACHE_DIR_OVERRIDE:-outputs/cache/source_weights}"
+MODEL_SEED="${MODEL_SEED_OVERRIDE:-42}"
 
 mkdir -p "$(dirname "$AUDIT_CSV")" "$CACHE_DIR" outputs/logs
 "$PYTHON" scripts/build_three_stage_ptox_to_soil_mgkg_split.py \
@@ -48,7 +49,7 @@ else
   OUT_ROOT="${OUT_ROOT_OVERRIDE:-outputs/experiments/v1_2_39_ptox_to_soil_mgkg_3stage_remote}"
 fi
 
-RUN_NAME="${RUN_NAME_OVERRIDE:-three_stage_protocolfix_routingfix_${MODE}_full_no_adapter_random8_2_seed42}"
+RUN_NAME="${RUN_NAME_OVERRIDE:-three_stage_protocolfix_routingfix_${MODE}_full_no_adapter_random8_2_seed${MODEL_SEED}}"
 RUN_DIR="$OUT_ROOT/v1.2.39_${RUN_NAME}/deep/full/$SPLIT_NAME"
 if [[ -s "$RUN_DIR/predictions.csv" && -s "$RUN_DIR/manifest.json" && -s "$RUN_DIR/best_model.pt" ]]; then
   echo "[skip-existing] $RUN_DIR"
@@ -63,7 +64,7 @@ fi
   --run-name-zh "$RUN_NAME" \
   --source-table "$SOURCE_TABLE" \
   --split-name "$SPLIT_NAME" \
-  --seed 42 \
+  --seed "$MODEL_SEED" \
   --target-standardization per_task_target \
   --head-routing task_target \
   --allow-mixed-target-dimensions \

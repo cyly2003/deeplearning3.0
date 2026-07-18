@@ -15,6 +15,7 @@ CONFIG="${CONFIG:-configs/experiment.remote.easyai.yaml}"
 DB="${DB:-outputs/derived/modeling_dataset_v2_0_0_rebuild.sqlite}"
 SOURCE_TABLE="aggregated_task_records_soil_mg_kg_qc"
 SPLIT_NAME="SoilMgkgQC2_B_random_8_2"
+MODEL_SEED="${MODEL_SEED_OVERRIDE:-42}"
 
 if [[ "$MODE" == "smoke" ]]; then
   EPOCHS=1
@@ -24,7 +25,7 @@ else
   OUT_ROOT="${OUT_ROOT_OVERRIDE:-outputs/experiments/v1_2_38_soil_mgkg_remote}"
 fi
 
-RUN_NAME="${RUN_NAME_OVERRIDE:-soil_mgkg_protocolfix_no_adapter_no_censored_${MODE}_random8_2_seed42}"
+RUN_NAME="${RUN_NAME_OVERRIDE:-soil_mgkg_protocolfix_no_adapter_no_censored_${MODE}_random8_2_seed${MODEL_SEED}}"
 RUN_DIR="$OUT_ROOT/v1.2.38_${RUN_NAME}/deep/full/$SPLIT_NAME"
 if [[ -s "$RUN_DIR/predictions.csv" && -s "$RUN_DIR/manifest.json" && -s "$RUN_DIR/best_model.pt" ]]; then
   echo "[skip-existing] $RUN_DIR"
@@ -39,7 +40,7 @@ fi
   --run-name-zh "$RUN_NAME" \
   --source-table "$SOURCE_TABLE" \
   --split-name "$SPLIT_NAME" \
-  --seed 42 \
+  --seed "$MODEL_SEED" \
   --epochs "$EPOCHS" \
   --finetune-epochs 0 \
   --batch-size 512 \
