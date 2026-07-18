@@ -740,6 +740,11 @@ def run_deep_experiment(
         validation_fraction_override=validation_fraction,
         monitor_split_override=monitor_split,
     )
+    requested_stage1_monitor_split = str(early_cfg["monitor_split"])
+    early_cfg["monitor_split"] = resolve_stage1_monitor_split(
+        requested_stage1_monitor_split,
+        staged_training=bool(finetune_requested or finetune_mgkg_requested),
+    )
     split_probe_samples = [
         {"split_part": str(row.get("split_part")), "task_head": str(row.get("task_head"))}
         for _, row in frame.iterrows()
@@ -1604,6 +1609,7 @@ def run_deep_experiment(
             "patience": int(early_cfg["patience"]),
             "min_delta": float(early_cfg["min_delta"]),
             "validation_fraction": float(early_cfg["validation_fraction"]),
+            "requested_monitor_split": requested_stage1_monitor_split,
             "monitor_split": early_cfg["monitor_split"],
         },
         "batch_size": train_config.batch_size,
@@ -3934,6 +3940,26 @@ def split_training_validation_indices(
     validation_set = set(validation)
     actual_train = [idx for idx in train_indices if idx not in validation_set]
     return actual_train, sorted(validation), "internal_train_fraction" if validation else ""
+
+
+def resolve_stage1_monitor_split(
+    monitor_split: str | None,
+    *,
+    staged_training: bool,
+) -> str:
+    """Keep stage-1 scheduling and model selection independent of downstream rows."""
+
+    requested = (monitor_split or "auto").strip().lower()
+    if not staged_training:
+        return requested
+    if requested in {"", "auto"}:
+        return "internal_train_fraction"
+    if requested in {"finetune", "finetune_mgkg"}:
+        raise ValueError(
+            "Stage-1 model selection cannot monitor downstream fine-tuning rows. "
+            "Use monitor_split='internal_train_fraction' or a dedicated stage-1 validation split."
+        )
+    return requested
 
 
 def split_finetune_validation_indices(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import sqlite3
 from contextlib import closing
@@ -33,6 +34,8 @@ DURATION_COLUMN_CANDIDATES = (
     "duration_h",
 )
 TARGET_DIMENSION_COLUMNS = ("target_family", "target_name")
+STAGE_SAMPLE_ID_PREFIX = "stage_sample_v1:"
+STAGE_CONTRACT_PREFIX = "stage_contract_v1"
 
 EXCLUDED_FEATURE_COLUMNS = {
     "aggregate_id",
@@ -395,13 +398,12 @@ def load_split_frame(
             raise ValueError("split_assignments table does not exist. Generate a split before running baseline.")
         resolved_source = resolve_split_source_table(conn, split_name, source_table)
         columns = table_columns(conn, resolved_source)
-        id_column = resolve_id_column(columns)
-        split_id_column = "aggregate_id" if id_column == "aggregate_id" else "record_id"
         assignment_limit = "" if limit is None else f" LIMIT {int(limit)}"
         assignments = pd.read_sql_query(
             f"""
             SELECT
-                {split_id_column} AS source_id,
+                record_id AS _assignment_record_id,
+                aggregate_id AS _assignment_aggregate_id,
                 split_name,
                 split_part,
                 split_type AS _assignment_split_type,
@@ -418,14 +420,67 @@ def load_split_frame(
         )
         if assignments.empty:
             raise ValueError(f"No split assignments found for split_name={split_name!r}.")
-        assignments["source_key"] = assignments["source_id"].astype(str)
-        frame = load_source_rows_by_ids(
-            conn,
-            resolved_source,
-            id_column,
-            assignments["source_id"].tolist(),
-        )
-        frame["source_key"] = frame[id_column].astype(str)
+        record_ids = assignments["_assignment_record_id"].astype("string").fillna("")
+        stage_sample_identity = record_ids.str.startswith(STAGE_SAMPLE_ID_PREFIX)
+        if bool(stage_sample_identity.any()) and not bool(stage_sample_identity.all()):
+            raise ValueError(
+                "A split cannot mix strict stage-sample assignments with legacy aggregate/record assignments: "
+                f"split_name={split_name!r}, source_table={resolved_source!r}."
+            )
+        strict_identity = bool(stage_sample_identity.all())
+        if strict_identity:
+            strict_columns = {"aggregate_id", "medium_domain", "target_name", "target_family"}
+            missing_columns = sorted(strict_columns - set(columns))
+            if missing_columns:
+                raise ValueError(
+                    "Strict stage-sample identity cannot be resolved because source columns are missing: "
+                    f"{missing_columns}; split_name={split_name!r}, source_table={resolved_source!r}."
+                )
+            if assignments["_assignment_aggregate_id"].isna().any():
+                raise ValueError(
+                    "Strict stage-sample assignments require aggregate_id as a lookup hint: "
+                    f"split_name={split_name!r}, source_table={resolved_source!r}."
+                )
+            assignments["source_key"] = record_ids.astype(str)
+            if assignments["source_key"].duplicated().any():
+                raise ValueError(
+                    "Strict split contains duplicate source record identities: "
+                    f"split_name={split_name!r}, source_table={resolved_source!r}."
+                )
+            aggregate_ids = assignments["_assignment_aggregate_id"].drop_duplicates().tolist()
+            frame = load_source_rows_by_ids(conn, resolved_source, "aggregate_id", aggregate_ids)
+            frame["source_key"] = [
+                stage_sample_record_id(aggregate_id, medium_domain, target_name, target_family)
+                for aggregate_id, medium_domain, target_name, target_family in zip(
+                    frame["aggregate_id"],
+                    frame["medium_domain"],
+                    frame["target_name"],
+                    frame["target_family"],
+                )
+            ]
+            if frame["source_key"].duplicated().any():
+                raise ValueError(
+                    "Strict split source contains duplicate composite stage-sample identities: "
+                    f"split_name={split_name!r}, source_table={resolved_source!r}."
+                )
+        else:
+            id_column = resolve_id_column(columns)
+            assignment_column = (
+                "_assignment_aggregate_id" if id_column == "aggregate_id" else "_assignment_record_id"
+            )
+            if assignments[assignment_column].isna().any():
+                raise ValueError(
+                    f"Split assignments contain null {assignment_column.removeprefix('_assignment_')} values: "
+                    f"split_name={split_name!r}, source_table={resolved_source!r}."
+                )
+            assignments["source_key"] = assignments[assignment_column].astype(str)
+            frame = load_source_rows_by_ids(
+                conn,
+                resolved_source,
+                id_column,
+                assignments[assignment_column].tolist(),
+            )
+            frame["source_key"] = frame[id_column].astype(str)
         frame = frame.merge(
             assignments[
                 [
@@ -438,16 +493,37 @@ def load_split_frame(
             ],
             on="source_key",
             how="inner",
+            validate="one_to_one" if strict_identity else "many_to_many",
         )
+        if strict_identity and len(frame) != len(assignments):
+            raise ValueError(
+                "Strict split merge count mismatch: "
+                f"assignments={len(assignments)}, merged={len(frame)}, "
+                f"split_name={split_name!r}, source_table={resolved_source!r}."
+            )
         frame, split_join_audit = enforce_split_medium_contract(
             frame,
             split_name=split_name,
             source_table=resolved_source,
         )
+        split_join_audit["assignment_rows"] = int(len(assignments))
+        split_join_audit["loaded_rows"] = int(len(frame))
+        if strict_identity and len(frame) != len(assignments):
+            raise ValueError(
+                "Strict split contract changed the assigned row count: "
+                f"assignments={len(assignments)}, loaded={len(frame)}, "
+                f"split_name={split_name!r}, source_table={resolved_source!r}."
+            )
         frame = frame.drop(
             columns=[
                 column
-                for column in ("source_key", "_assignment_split_type", "_assignment_group_key")
+                for column in (
+                    "source_key",
+                    "_assignment_record_id",
+                    "_assignment_aggregate_id",
+                    "_assignment_split_type",
+                    "_assignment_group_key",
+                )
                 if column in frame.columns
             ]
         )
@@ -456,7 +532,14 @@ def load_split_frame(
     if frame.empty:
         raise ValueError(f"No rows found for split_name={split_name!r}.")
     if "target_status" in frame.columns:
-        frame = frame[(frame["target_status"].isna()) | (frame["target_status"] == "included")]
+        included = (frame["target_status"].isna()) | (frame["target_status"] == "included")
+        if strict_identity and not bool(included.all()):
+            raise ValueError(
+                "Strict split includes source rows excluded by target_status; assigned rows are never silently filtered: "
+                f"excluded={int((~included).sum())}, split_name={split_name!r}, "
+                f"source_table={resolved_source!r}."
+            )
+        frame = frame[included]
     if not allow_mixed_target_dimensions:
         validate_single_target_dimension(frame, split_name=split_name, source_table=resolved_source)
     return frame
@@ -475,22 +558,83 @@ def enforce_split_medium_contract(
         "removed_rows_count": 0,
         "removed_rows": [],
     }
-    required_columns = {"medium_domain", "_assignment_group_key", "split_part"}
-    if frame.empty or not required_columns.issubset(frame.columns):
+    base_required_columns = {"medium_domain", "_assignment_group_key", "split_part"}
+    if frame.empty or not base_required_columns.issubset(frame.columns):
         audit["output_rows"] = int(len(frame))
         return frame, audit
 
-    expected = frame["_assignment_group_key"].map(expected_medium_from_group_key)
-    observed = frame["medium_domain"].astype("string").str.strip().str.lower()
+    group_keys = frame["_assignment_group_key"].astype("string").fillna("")
+    strict_contract = group_keys.str.startswith(STAGE_CONTRACT_PREFIX)
+    if bool(strict_contract.any()):
+        strict_required_columns = {"medium_domain", "target_name", "target_family"}
+        missing_columns = sorted(strict_required_columns - set(frame.columns))
+        if missing_columns:
+            raise ValueError(
+                "Strict stage contract cannot be checked because source columns are missing: "
+                f"{missing_columns}; split_name={split_name!r}, source_table={source_table!r}."
+            )
+        contract_by_key = {
+            key: parse_stage_contract(key) for key in group_keys.loc[strict_contract].unique().tolist()
+        }
+        contract_fields = ("medium_domain", "target_name", "target_family")
+        expected_series = {
+            field: group_keys.map(
+                {key: normalize_contract_value(contract[field]) for key, contract in contract_by_key.items()}
+            )
+            for field in contract_fields
+        }
+        observed_series = {
+            field: frame[field].astype("string").fillna("").str.strip().str.casefold()
+            for field in contract_fields
+        }
+        field_mismatches = {
+            field: strict_contract & observed_series[field].ne(expected_series[field])
+            for field in contract_fields
+        }
+        mismatch = field_mismatches["medium_domain"].copy()
+        for field in contract_fields[1:]:
+            mismatch |= field_mismatches[field]
+        audit["strict_contract_rows"] = int(strict_contract.sum())
+        if bool(mismatch.any()):
+            mismatch_rows: list[dict[str, str]] = []
+            for index in frame.index[mismatch][:3]:
+                contract = contract_by_key[group_keys.loc[index]]
+                observed = {field: observed_series[field].loc[index] for field in contract_fields}
+                expected = {field: expected_series[field].loc[index] for field in contract_fields}
+                mismatch_rows.append(
+                    {
+                        "split_part": clean_audit_value(frame.loc[index, "split_part"]),
+                        "stage": contract["stage"],
+                        "fields": ",".join(
+                            field for field in contract_fields if bool(field_mismatches[field].loc[index])
+                        ),
+                        "expected": repr(expected),
+                        "observed": repr(observed),
+                    }
+                )
+            preview = "; ".join(
+                f"part={row['split_part']} stage={row['stage']} fields={row['fields']} "
+                f"expected={row['expected']} observed={row['observed']}"
+                for row in mismatch_rows[:3]
+            )
+            raise ValueError(
+                "Strict stage contract mismatch; assigned rows are never silently filtered. "
+                f"mismatches={int(mismatch.sum())}, split_name={split_name!r}, "
+                f"source_table={source_table!r}: {preview}"
+            )
+
+    legacy_frame = frame.loc[~strict_contract]
+    expected = legacy_frame["_assignment_group_key"].map(expected_medium_from_group_key)
+    observed = legacy_frame["medium_domain"].astype("string").str.strip().str.lower()
     checked = expected.notna()
     mismatch = checked & observed.ne(expected)
-    audit["checked_rows"] = int(checked.sum())
+    audit["checked_rows"] = int(checked.sum()) + int(strict_contract.sum())
     if not bool(mismatch.any()):
         audit["output_rows"] = int(len(frame))
         return frame, audit
 
     removed = (
-        frame.loc[mismatch]
+        legacy_frame.loc[mismatch]
         .assign(_expected_medium_domain=expected[mismatch], _observed_medium_domain=observed[mismatch])
         .groupby(["split_part", "_assignment_group_key", "_expected_medium_domain", "_observed_medium_domain"], dropna=False)
         .size()
@@ -507,9 +651,33 @@ def enforce_split_medium_contract(
         }
         for _, row in removed.iterrows()
     ]
-    filtered = frame.loc[~mismatch].copy()
+    filtered = frame.drop(index=legacy_frame.index[mismatch]).copy()
     audit["output_rows"] = int(len(filtered))
     return filtered, audit
+
+
+def parse_stage_contract(value: Any) -> dict[str, str]:
+    text = str(value or "").strip()
+    parts = text.split("|")
+    if not parts or parts[0] != STAGE_CONTRACT_PREFIX:
+        raise ValueError(f"Not a strict stage contract group_key: {text!r}")
+    contract: dict[str, str] = {}
+    for part in parts[1:]:
+        key, separator, item = part.partition("=")
+        if not separator or not key or not item:
+            raise ValueError(f"Malformed strict stage contract group_key: {text!r}")
+        if key in contract:
+            raise ValueError(f"Duplicate field {key!r} in strict stage contract group_key: {text!r}")
+        contract[key] = item
+    required = {"stage", "medium_domain", "target_name", "target_family"}
+    missing = sorted(required - set(contract))
+    if missing:
+        raise ValueError(f"Strict stage contract group_key is missing fields {missing}: {text!r}")
+    return contract
+
+
+def normalize_contract_value(value: Any) -> str:
+    return str(value or "").strip().casefold()
 
 
 def expected_medium_from_group_key(value: Any) -> str | None:
@@ -593,6 +761,21 @@ def load_source_rows_by_ids(
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
+
+
+def stage_sample_record_id(
+    aggregate_id: Any,
+    medium_domain: Any,
+    target_name: Any,
+    target_family: Any,
+) -> str:
+    payload = json.dumps(
+        [str(aggregate_id), str(medium_domain), str(target_name), str(target_family)],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return f"{STAGE_SAMPLE_ID_PREFIX}{digest}"
 
 
 def coerce_sqlite_id(value: Any) -> int | str:

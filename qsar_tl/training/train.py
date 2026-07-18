@@ -48,7 +48,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--early-stopping-patience", type=int, default=None)
     parser.add_argument("--early-stopping-min-delta", type=float, default=None)
     parser.add_argument("--validation-fraction", type=float, default=None)
-    parser.add_argument("--monitor-split", default=None)
+    parser.add_argument(
+        "--monitor-split",
+        default=None,
+        help=(
+            "Split used for stage-1 model selection. Staged transfer runs should use "
+            "'internal_train_fraction' so downstream fine-tuning rows remain unseen."
+        ),
+    )
     parser.add_argument("--finetune-epochs", type=int, default=None)
     parser.add_argument("--finetune-learning-rate", type=float, default=None)
     parser.add_argument("--finetune-batch-size", type=int, default=None)

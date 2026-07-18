@@ -13,10 +13,10 @@ execution:
     host: i.easy-ai.cloud
     alternate_hosts:
       - b.easy-ai.cloud
-    port: 32136
+    port: 32057
     user: easyai
-    project_dir: /home/easyai/DL1/ecotox_qsar_transfer
-    python: /opt/anaconda3/bin/python
+    project_dir: /home/easyai/DL1/ecotox_qsar_transfer_git
+    python: /opt/anaconda3/envs/qsar-ph3/bin/python
     conda: /opt/anaconda3/bin/conda
     sync_data: true
     pull_outputs: true
