@@ -218,8 +218,8 @@ def train_model(
         dataset,
         batch_size=train_config.batch_size,
         shuffle=True,
-        num_workers=train_config.num_workers,
         collate_fn=collate_aggregated_task_batch,
+        **dataloader_runtime_options(train_config.device, train_config.num_workers),
     )
 
     metrics: list[EpochMetrics] = []
@@ -237,11 +237,30 @@ def train_model(
     return TrainingHistory(epochs=tuple(metrics))
 
 
-def graph_to_device(graph: Any, device: torch.device) -> Any:
+def dataloader_runtime_options(
+    device: torch.device | str,
+    num_workers: int,
+    *,
+    persistent_workers: bool = False,
+) -> dict[str, Any]:
+    """Return protocol-invariant loader options for faster host/device transfer."""
+    worker_count = max(0, int(num_workers))
+    options: dict[str, Any] = {
+        "num_workers": worker_count,
+        "pin_memory": torch.device(device).type == "cuda",
+    }
+    if worker_count > 0:
+        options["prefetch_factor"] = 2
+        if persistent_workers:
+            options["persistent_workers"] = True
+    return options
+
+
+def graph_to_device(graph: Any, device: torch.device, *, non_blocking: bool = False) -> Any:
     if graph is None:
         return None
     return {
-        key: value.to(device) if torch.is_tensor(value) else value
+        key: value.to(device, non_blocking=non_blocking) if torch.is_tensor(value) else value
         for key, value in graph.items()
     }
 
@@ -265,23 +284,23 @@ def train_one_epoch(
     task_counts: dict[str, int] = {}
 
     for batch in dataloader:
-        molecular_numeric = batch["molecular_numeric"].to(target_device)
-        fingerprint = batch["fingerprint"].to(target_device)
-        molecular_graph = graph_to_device(batch.get("molecular_graph"), target_device)
+        molecular_numeric = batch["molecular_numeric"].to(target_device, non_blocking=True)
+        fingerprint = batch["fingerprint"].to(target_device, non_blocking=True)
+        molecular_graph = graph_to_device(batch.get("molecular_graph"), target_device, non_blocking=True)
         categorical_ids = {
-            field_name: ids.to(target_device)
+            field_name: ids.to(target_device, non_blocking=True)
             for field_name, ids in batch["categorical_ids"].items()
         }
-        targets = batch["target_value"].to(target_device)
+        targets = batch["target_value"].to(target_device, non_blocking=True)
         adapter_ids = batch.get("adapter_id")
-        adapter_ids = adapter_ids.to(target_device) if adapter_ids is not None else None
+        adapter_ids = adapter_ids.to(target_device, non_blocking=True) if adapter_ids is not None else None
         task_heads = list(batch["task_head"])
         toxicity_bin_index = batch.get("toxicity_bin_index")
-        toxicity_bin_index = toxicity_bin_index.to(target_device) if toxicity_bin_index is not None else None
+        toxicity_bin_index = toxicity_bin_index.to(target_device, non_blocking=True) if toxicity_bin_index is not None else None
         censored_direction_id = batch.get("censored_direction_id")
-        censored_direction_id = censored_direction_id.to(target_device) if censored_direction_id is not None else None
+        censored_direction_id = censored_direction_id.to(target_device, non_blocking=True) if censored_direction_id is not None else None
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         model_kwargs = {"adapter_ids": adapter_ids}
         if molecular_graph is not None:
             model_kwargs["molecular_graph"] = molecular_graph

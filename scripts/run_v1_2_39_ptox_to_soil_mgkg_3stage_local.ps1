@@ -69,6 +69,7 @@ $baseTrainArgs = @(
     "--validation-fraction", "0.1",
     "--source-weighting-method", "tanimoto_to_finetune",
     "--source-weighting-alpha", "1.0",
+    "--source-weight-cache-dir", "outputs\cache\source_weights",
     "--toxicity-binning",
     "--toxicity-binning-mode", "aux_classification",
     "--toxicity-binning-scheme", "authority_v1",

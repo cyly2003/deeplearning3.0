@@ -71,6 +71,24 @@ def test_v139_runner_uses_stage_local_validation_and_no_censored_ablation() -> N
     assert '"protocolfix_routingfix"' in runner
     assert "--audit-csv" in runner
     assert "routing_audit.csv" in runner
+    assert '"--source-weight-cache-dir", "outputs\\cache\\source_weights"' in runner
     assert "Assert-RoutingAudit -TransferSplit $SplitName" in runner
     assert '"main" {' in runner and "Invoke-Splits" in runner
     assert '"ablations" {' in runner and "Invoke-Random8Split" in runner
+
+
+def test_remote_v138_v139_launchers_preserve_paired_protocol() -> None:
+    v138 = (ROOT / "scripts" / "run_v1_2_38_soil_mgkg_random_remote.sh").read_text(encoding="utf-8")
+    v139 = (ROOT / "scripts" / "run_v1_2_39_ptox_to_soil_mgkg_3stage_remote.sh").read_text(encoding="utf-8")
+
+    for runner in (v138, v139):
+        assert "--batch-size 512" in runner
+        assert "--no-medium-adapters" in runner
+        assert "--no-censored-loss" in runner
+        assert "--monitor-split internal_train_fraction" in runner
+        assert "--validation-fraction 0.1" in runner
+    assert "--source-weighting-method none" in v138
+    assert "--source-weighting-method tanimoto_to_finetune" in v139
+    assert "--source-weight-cache-dir" in v139
+    assert "--finetune-mgkg-epochs" in v139
+    assert "--audit-csv" in v139

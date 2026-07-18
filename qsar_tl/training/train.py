@@ -103,6 +103,11 @@ def build_parser() -> argparse.ArgumentParser:
         ],
     )
     parser.add_argument("--source-weighting-alpha", type=float, default=None)
+    parser.add_argument(
+        "--source-weight-cache-dir",
+        default=None,
+        help="Optional reusable cache directory keyed by exact source/target identities and feature matrices.",
+    )
     parser.add_argument("--effect-level-weighting", dest="effect_level_weighting_enabled", action="store_true", default=None)
     parser.add_argument("--no-effect-level-weighting", dest="effect_level_weighting_enabled", action="store_false")
     parser.add_argument("--effect-level-weighting-beta", type=float, default=None)
@@ -194,6 +199,7 @@ def main() -> None:
         metric_min_n=args.metric_min_n,
         source_weighting_method=args.source_weighting_method,
         source_weighting_alpha=args.source_weighting_alpha,
+        source_weight_cache_dir=args.source_weight_cache_dir,
         effect_level_weighting_enabled=args.effect_level_weighting_enabled,
         effect_level_weighting_beta=args.effect_level_weighting_beta,
         toxicity_binning_enabled=args.toxicity_binning_enabled,

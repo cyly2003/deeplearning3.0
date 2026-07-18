@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 import math
+import os
 import sqlite3
 from collections import Counter
 from contextlib import closing
@@ -27,6 +28,7 @@ from qsar_tl.training.deep_train import (
     DeepTrainingConfig,
     build_optimizer,
     collate_aggregated_task_batch,
+    dataloader_runtime_options,
     graph_to_device,
     set_torch_seed,
 )
@@ -79,6 +81,7 @@ DURATION_NUMERIC_COLUMNS = (
 )
 CONTEXT_NUMERIC_COLUMNS = EFFECT_LEVEL_NUMERIC_COLUMNS + DURATION_NUMERIC_COLUMNS
 RAW_NUMERIC_CLIP_ABS = 1.0e12
+SOURCE_WEIGHT_CACHE_SCHEMA = "source_weight_v1"
 CATEGORICAL_COLUMNS = (
     "latin_name",
     "kingdom",
@@ -564,6 +567,7 @@ def run_deep_experiment(
     metric_min_n: int | None = None,
     source_weighting_method: str | None = None,
     source_weighting_alpha: float | None = None,
+    source_weight_cache_dir: str | Path | None = None,
     effect_level_weighting_enabled: bool | None = None,
     effect_level_weighting_beta: float | None = None,
     toxicity_binning_enabled: bool | None = None,
@@ -909,6 +913,7 @@ def run_deep_experiment(
         samples,
         source_weighting_cfg,
         descriptor_names=descriptor_names,
+        cache_dir=source_weight_cache_dir,
     )
     effect_level_weighting_summary = apply_effect_level_frequency_weights(
         samples,
@@ -1059,16 +1064,16 @@ def run_deep_experiment(
         train_dataset,
         batch_size=train_config.batch_size,
         shuffle=True,
-        num_workers=train_config.num_workers,
         collate_fn=collate_aggregated_task_batch,
+        **dataloader_runtime_options(torch_device, train_config.num_workers),
     )
     validation_loader = (
         DataLoader(
             validation_dataset,
             batch_size=train_config.batch_size,
             shuffle=False,
-            num_workers=train_config.num_workers,
             collate_fn=collate_aggregated_task_batch,
+            **dataloader_runtime_options(torch_device, train_config.num_workers),
         )
         if validation_dataset is not None
         else None
@@ -1092,8 +1097,8 @@ def run_deep_experiment(
                 _IndexDataset(dataset, pretrain_alignment_indices),
                 batch_size=train_config.batch_size,
                 shuffle=True,
-                num_workers=train_config.num_workers,
                 collate_fn=collate_aggregated_task_batch,
+                **dataloader_runtime_options(torch_device, train_config.num_workers),
             )
         )
         if pretrain_alignment_indices
@@ -1205,16 +1210,16 @@ def run_deep_experiment(
             finetune_dataset,
             batch_size=finetune_config.batch_size,
             shuffle=True,
-            num_workers=finetune_config.num_workers,
             collate_fn=collate_aggregated_task_batch,
+            **dataloader_runtime_options(torch_device, finetune_config.num_workers),
         )
         finetune_validation_loader = (
             DataLoader(
                 _IndexDataset(dataset, finetune_validation_indices),
                 batch_size=finetune_config.batch_size,
                 shuffle=False,
-                num_workers=finetune_config.num_workers,
                 collate_fn=collate_aggregated_task_batch,
+                **dataloader_runtime_options(torch_device, finetune_config.num_workers),
             )
             if finetune_validation_indices
             else None
@@ -1231,8 +1236,8 @@ def run_deep_experiment(
                     _IndexDataset(dataset, finetune_alignment_indices),
                     batch_size=finetune_config.batch_size,
                     shuffle=True,
-                    num_workers=finetune_config.num_workers,
                     collate_fn=collate_aggregated_task_batch,
+                    **dataloader_runtime_options(torch_device, finetune_config.num_workers),
                 )
             )
             if finetune_alignment_indices
@@ -1363,16 +1368,16 @@ def run_deep_experiment(
             finetune_mgkg_dataset,
             batch_size=finetune_mgkg_config.batch_size,
             shuffle=True,
-            num_workers=finetune_mgkg_config.num_workers,
             collate_fn=collate_aggregated_task_batch,
+            **dataloader_runtime_options(torch_device, finetune_mgkg_config.num_workers),
         )
         finetune_mgkg_validation_loader = (
             DataLoader(
                 _IndexDataset(dataset, finetune_mgkg_validation_indices),
                 batch_size=finetune_mgkg_config.batch_size,
                 shuffle=False,
-                num_workers=finetune_mgkg_config.num_workers,
                 collate_fn=collate_aggregated_task_batch,
+                **dataloader_runtime_options(torch_device, finetune_mgkg_config.num_workers),
             )
             if finetune_mgkg_validation_indices
             else None
@@ -1481,6 +1486,7 @@ def run_deep_experiment(
         samples,
         batch_size=train_config.batch_size,
         device=torch_device,
+        num_workers=train_config.num_workers,
         target_scaler=target_scaler,
     )
     metrics_rows = metrics_by_group(
@@ -3269,6 +3275,7 @@ def apply_source_similarity_weights(
     config: SourceWeightingConfig,
     *,
     descriptor_names: tuple[str, ...] | list[str] | None = None,
+    cache_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     for sample in samples:
         sample["sample_weight"] = 1.0
@@ -3277,6 +3284,11 @@ def apply_source_similarity_weights(
         "applied": False,
         "weighted_samples": 0,
         "target_reference_samples": 0,
+        "cache_enabled": cache_dir is not None,
+        "cache_hit": False,
+        "cache_schema": SOURCE_WEIGHT_CACHE_SCHEMA,
+        "cache_key": "",
+        "cache_path": "",
     }
     if not config.active():
         return summary
@@ -3310,16 +3322,60 @@ def apply_source_similarity_weights(
     similarities: np.ndarray | None = None
     distances: np.ndarray | None = None
     raw_weights: np.ndarray | None = None
+    source_fp: np.ndarray | None = None
+    target_fp: np.ndarray | None = None
+    source_proxy: np.ndarray | None = None
+    target_proxy: np.ndarray | None = None
     if config.method in {"tanimoto", "tanimoto_to_target", "tanimoto_to_finetune", "tanimoto_proxy_to_finetune"}:
         source_fp = np.asarray([samples[idx].get("fingerprint", []) for idx in source_indices], dtype=np.float32)
         target_fp = np.asarray([samples[idx].get("fingerprint", []) for idx in target_indices], dtype=np.float32)
         if source_fp.ndim != 2 or target_fp.ndim != 2 or source_fp.shape[1] != target_fp.shape[1]:
             return summary
-        similarities = max_tanimoto_similarity(source_fp, target_fp)
-        raw_weights = 1.0 + float(config.alpha) * similarities
     if config.method in {"proxy_distance_to_finetune", "tanimoto_proxy_to_finetune"}:
         source_proxy = proxy_descriptor_matrix(samples, source_indices, descriptor_names=descriptor_names)
         target_proxy = proxy_descriptor_matrix(samples, target_indices, descriptor_names=descriptor_names)
+
+    cache_path: Path | None = None
+    if cache_dir is not None:
+        cache_key = source_weight_cache_key(
+            samples,
+            source_indices=source_indices,
+            target_indices=target_indices,
+            config=config,
+            descriptor_names=descriptor_names,
+            source_fp=source_fp,
+            target_fp=target_fp,
+            source_proxy=source_proxy,
+            target_proxy=target_proxy,
+        )
+        cache_path = Path(cache_dir) / f"{cache_key}.npz"
+        summary.update({"cache_key": cache_key, "cache_path": str(cache_path)})
+        if cache_path.exists():
+            clipped, cached_summary = load_source_weight_cache(
+                cache_path,
+                expected_rows=len(source_indices),
+                expected_key=cache_key,
+            )
+            for idx, weight in zip(source_indices, clipped):
+                samples[idx]["sample_weight"] = float(weight)
+            summary.update(cached_summary)
+            summary.update(
+                {
+                    **config.to_manifest(),
+                    "weighted_samples": len(source_indices),
+                    "target_reference_samples": len(target_indices),
+                    "cache_enabled": True,
+                    "cache_hit": True,
+                    "cache_key": cache_key,
+                    "cache_path": str(cache_path),
+                }
+            )
+            return summary
+
+    if source_fp is not None and target_fp is not None:
+        similarities = max_tanimoto_similarity(source_fp, target_fp)
+        raw_weights = 1.0 + float(config.alpha) * similarities
+    if source_proxy is not None and target_proxy is not None:
         distances = min_proxy_distance(source_proxy, target_proxy)
         proxy_weights = np.exp(-float(config.alpha) * distances)
         raw_weights = proxy_weights if raw_weights is None else raw_weights * proxy_weights
@@ -3357,7 +3413,129 @@ def apply_source_similarity_weights(
                 "proxy_distance_max": float(np.max(distances)),
             }
         )
+    if cache_path is not None:
+        write_source_weight_cache(cache_path, clipped, summary)
     return summary
+
+
+def source_weight_cache_key(
+    samples: list[dict[str, Any]],
+    *,
+    source_indices: list[int],
+    target_indices: list[int],
+    config: SourceWeightingConfig,
+    descriptor_names: tuple[str, ...] | list[str] | None,
+    source_fp: np.ndarray | None,
+    target_fp: np.ndarray | None,
+    source_proxy: np.ndarray | None,
+    target_proxy: np.ndarray | None,
+) -> str:
+    digest = hashlib.sha256()
+    contract = {
+        "schema": SOURCE_WEIGHT_CACHE_SCHEMA,
+        "config": config.to_manifest(),
+        "descriptor_names": [str(value) for value in (descriptor_names or ())],
+    }
+    digest.update(json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    for label, indices in (("source", source_indices), ("target", target_indices)):
+        digest.update(label.encode("ascii"))
+        for idx in indices:
+            sample = samples[idx]
+            identity = [
+                idx,
+                sample.get("sample_id", ""),
+                sample.get("aggregate_id", ""),
+                sample.get("split_part", ""),
+                sample.get("medium_domain", ""),
+                sample.get("target_name", ""),
+                sample.get("target_family", ""),
+                sample.get("target_basis", ""),
+                sample.get("target_column", ""),
+                sample.get("target_scale_key", ""),
+                sample.get("unit_family_v2", ""),
+                sample.get("task_head", ""),
+                sample.get("model_head", ""),
+            ]
+            digest.update(
+                json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            )
+            digest.update(b"\n")
+    for label, matrix in (
+        ("source_fp", source_fp),
+        ("target_fp", target_fp),
+        ("source_proxy", source_proxy),
+        ("target_proxy", target_proxy),
+    ):
+        digest.update(label.encode("ascii"))
+        if matrix is None:
+            digest.update(b"none")
+            continue
+        contiguous = np.ascontiguousarray(matrix, dtype=np.float32)
+        digest.update(json.dumps(list(contiguous.shape)).encode("ascii"))
+        digest.update(contiguous.tobytes(order="C"))
+    return digest.hexdigest()
+
+
+def load_source_weight_cache(
+    path: Path,
+    *,
+    expected_rows: int,
+    expected_key: str,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    try:
+        with np.load(path, allow_pickle=False) as payload:
+            weights = np.asarray(payload["weights"], dtype=np.float32)
+            summary = json.loads(str(payload["summary_json"].item()))
+            cache_key = str(payload["cache_key"].item())
+            schema_version = str(payload["schema_version"].item())
+            weights_sha256 = str(payload["weights_sha256"].item())
+            stored_row_count = int(payload["row_count"].item())
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Source-weight cache is corrupt or incompatible: {path}") from exc
+    if weights.ndim != 1 or int(weights.shape[0]) != int(expected_rows):
+        raise ValueError(
+            "Source-weight cache row count mismatch: "
+            f"path={path}, expected={expected_rows}, observed={weights.shape}"
+        )
+    if not isinstance(summary, dict):
+        raise ValueError(f"Source-weight cache summary must be a JSON object: {path}")
+    observed_checksum = hashlib.sha256(np.ascontiguousarray(weights).tobytes(order="C")).hexdigest()
+    if (
+        cache_key != expected_key
+        or schema_version != SOURCE_WEIGHT_CACHE_SCHEMA
+        or stored_row_count != expected_rows
+        or weights_sha256 != observed_checksum
+    ):
+        raise ValueError(
+            "Source-weight cache contract mismatch: "
+            f"path={path}, expected_key={expected_key}, stored_key={cache_key}, "
+            f"schema={schema_version}, rows={stored_row_count}, checksum_ok={weights_sha256 == observed_checksum}"
+        )
+    return weights, summary
+
+
+def write_source_weight_cache(path: Path, weights: np.ndarray, summary: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    normalized_weights = np.asarray(weights, dtype=np.float32)
+    weights_sha256 = hashlib.sha256(
+        np.ascontiguousarray(normalized_weights).tobytes(order="C")
+    ).hexdigest()
+    try:
+        with temporary.open("wb") as handle:
+            np.savez_compressed(
+                handle,
+                weights=normalized_weights,
+                summary_json=np.asarray(json.dumps(dict(summary), sort_keys=True)),
+                cache_key=np.asarray(path.stem),
+                schema_version=np.asarray(SOURCE_WEIGHT_CACHE_SCHEMA),
+                weights_sha256=np.asarray(weights_sha256),
+                row_count=np.asarray(int(normalized_weights.shape[0]), dtype=np.int64),
+            )
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def proxy_descriptor_matrix(
@@ -4073,21 +4251,21 @@ def train_one_epoch(
     total_samples = 0
     max_grad_norm = 0.0
     for batch in dataloader:
-        molecular_numeric = batch["molecular_numeric"].to(device)
-        fingerprint = batch["fingerprint"].to(device)
-        molecular_graph = graph_to_device(batch.get("molecular_graph"), device)
-        categorical_ids = {key: value.to(device) for key, value in batch["categorical_ids"].items()}
+        molecular_numeric = batch["molecular_numeric"].to(device, non_blocking=True)
+        fingerprint = batch["fingerprint"].to(device, non_blocking=True)
+        molecular_graph = graph_to_device(batch.get("molecular_graph"), device, non_blocking=True)
+        categorical_ids = {key: value.to(device, non_blocking=True) for key, value in batch["categorical_ids"].items()}
         adapter_ids = batch.get("adapter_id")
-        adapter_ids = adapter_ids.to(device) if adapter_ids is not None else None
-        targets = batch["target_value"].to(device)
+        adapter_ids = adapter_ids.to(device, non_blocking=True) if adapter_ids is not None else None
+        targets = batch["target_value"].to(device, non_blocking=True)
         sample_weights = batch.get("sample_weight")
-        sample_weights = sample_weights.to(device) if sample_weights is not None else None
+        sample_weights = sample_weights.to(device, non_blocking=True) if sample_weights is not None else None
         toxicity_bin_index = batch.get("toxicity_bin_index")
-        toxicity_bin_index = toxicity_bin_index.to(device) if toxicity_bin_index is not None else None
+        toxicity_bin_index = toxicity_bin_index.to(device, non_blocking=True) if toxicity_bin_index is not None else None
         censored_direction_id = batch.get("censored_direction_id")
-        censored_direction_id = censored_direction_id.to(device) if censored_direction_id is not None else None
+        censored_direction_id = censored_direction_id.to(device, non_blocking=True) if censored_direction_id is not None else None
         task_heads = list(batch["task_head"])
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         loss_components = batch_weighted_loss(
             model,
             molecular_numeric,
@@ -4169,18 +4347,18 @@ def evaluate_loss(model: Any, dataloader: Any, loss_fn: Any, config: DeepTrainin
     total_samples = 0
     with torch.no_grad():
         for batch in dataloader:
-            molecular_numeric = batch["molecular_numeric"].to(device)
-            fingerprint = batch["fingerprint"].to(device)
-            molecular_graph = graph_to_device(batch.get("molecular_graph"), device)
-            categorical_ids = {key: value.to(device) for key, value in batch["categorical_ids"].items()}
+            molecular_numeric = batch["molecular_numeric"].to(device, non_blocking=True)
+            fingerprint = batch["fingerprint"].to(device, non_blocking=True)
+            molecular_graph = graph_to_device(batch.get("molecular_graph"), device, non_blocking=True)
+            categorical_ids = {key: value.to(device, non_blocking=True) for key, value in batch["categorical_ids"].items()}
             adapter_ids = batch.get("adapter_id")
-            adapter_ids = adapter_ids.to(device) if adapter_ids is not None else None
-            targets = batch["target_value"].to(device)
+            adapter_ids = adapter_ids.to(device, non_blocking=True) if adapter_ids is not None else None
+            targets = batch["target_value"].to(device, non_blocking=True)
             task_heads = list(batch["task_head"])
             toxicity_bin_index = batch.get("toxicity_bin_index")
-            toxicity_bin_index = toxicity_bin_index.to(device) if toxicity_bin_index is not None else None
+            toxicity_bin_index = toxicity_bin_index.to(device, non_blocking=True) if toxicity_bin_index is not None else None
             censored_direction_id = batch.get("censored_direction_id")
-            censored_direction_id = censored_direction_id.to(device) if censored_direction_id is not None else None
+            censored_direction_id = censored_direction_id.to(device, non_blocking=True) if censored_direction_id is not None else None
             loss_components = batch_weighted_loss(
                 model,
                 molecular_numeric,
@@ -4404,12 +4582,12 @@ def coral_batch_loss(
 
 
 def shared_representation(model: Any, batch: Mapping[str, Any], *, device: Any) -> Any:
-    molecular_numeric = batch["molecular_numeric"].to(device)
-    fingerprint = batch["fingerprint"].to(device)
-    molecular_graph = graph_to_device(batch.get("molecular_graph"), device)
-    categorical_ids = {key: value.to(device) for key, value in batch["categorical_ids"].items()}
+    molecular_numeric = batch["molecular_numeric"].to(device, non_blocking=True)
+    fingerprint = batch["fingerprint"].to(device, non_blocking=True)
+    molecular_graph = graph_to_device(batch.get("molecular_graph"), device, non_blocking=True)
+    categorical_ids = {key: value.to(device, non_blocking=True) for key, value in batch["categorical_ids"].items()}
     adapter_ids = batch.get("adapter_id")
-    adapter_ids = adapter_ids.to(device) if adapter_ids is not None else None
+    adapter_ids = adapter_ids.to(device, non_blocking=True) if adapter_ids is not None else None
     return model.encode_shared(
         molecular_numeric=molecular_numeric,
         fingerprint=fingerprint,
@@ -4439,32 +4617,74 @@ def predict_all(
     *,
     batch_size: int,
     device: Any,
+    num_workers: int = 0,
     target_scaler: TargetScaler | None = None,
 ) -> list[dict[str, Any]]:
     import torch
     from torch.utils.data import DataLoader
 
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_aggregated_task_batch)
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_aggregated_task_batch,
+        **dataloader_runtime_options(device, num_workers),
+    )
     model.eval()
     predictions: list[dict[str, Any]] = []
     cursor = 0
     with torch.no_grad():
         for batch in loader:
-            molecular_numeric = batch["molecular_numeric"].to(device)
-            fingerprint = batch["fingerprint"].to(device)
-            molecular_graph = graph_to_device(batch.get("molecular_graph"), device)
-            categorical_ids = {key: value.to(device) for key, value in batch["categorical_ids"].items()}
+            molecular_numeric = batch["molecular_numeric"].to(device, non_blocking=True)
+            fingerprint = batch["fingerprint"].to(device, non_blocking=True)
+            molecular_graph = graph_to_device(batch.get("molecular_graph"), device, non_blocking=True)
+            categorical_ids = {key: value.to(device, non_blocking=True) for key, value in batch["categorical_ids"].items()}
             adapter_ids = batch.get("adapter_id")
-            adapter_ids = adapter_ids.to(device) if adapter_ids is not None else None
+            adapter_ids = adapter_ids.to(device, non_blocking=True) if adapter_ids is not None else None
             model_kwargs = {"adapter_ids": adapter_ids}
             if molecular_graph is not None:
                 model_kwargs["molecular_graph"] = molecular_graph
             outputs = model(molecular_numeric, fingerprint, categorical_ids, **model_kwargs)
             task_heads = list(batch["task_head"])
-            targets = batch["target_value"].detach().cpu().tolist()
+            targets = batch["target_value"].tolist()
+            if not task_heads:
+                continue
+            indices_by_head: dict[str, list[int]] = {}
+            for idx, model_head in enumerate(task_heads):
+                indices_by_head.setdefault(model_head, []).append(idx)
+            first_head = task_heads[0]
+            if first_head not in outputs:
+                raise ValueError(f"Prediction output is missing task head: {first_head}")
+            first_output = outputs[first_head]
+            if first_output.ndim != 1 or int(first_output.shape[0]) != len(task_heads):
+                raise ValueError(
+                    "Prediction task-head output must be one-dimensional and batch aligned: "
+                    f"head={first_head}, shape={tuple(first_output.shape)}, batch={len(task_heads)}"
+                )
+            selected_predictions = torch.empty_like(first_output)
+            written = torch.zeros(len(task_heads), dtype=torch.bool, device=first_output.device)
+            for model_head, head_indices in indices_by_head.items():
+                if model_head not in outputs:
+                    raise ValueError(f"Prediction output is missing task head: {model_head}")
+                head_output = outputs[model_head]
+                if head_output.ndim != 1 or int(head_output.shape[0]) != len(task_heads):
+                    raise ValueError(
+                        "Prediction task-head output must be one-dimensional and batch aligned: "
+                        f"head={model_head}, shape={tuple(head_output.shape)}, batch={len(task_heads)}"
+                    )
+                index_tensor = torch.as_tensor(head_indices, dtype=torch.long, device=device)
+                selected_predictions.index_copy_(
+                    0,
+                    index_tensor,
+                    head_output.index_select(0, index_tensor),
+                )
+                written.index_fill_(0, index_tensor, True)
+            if not bool(written.all().item()):
+                raise ValueError("Prediction routing did not assign every row exactly once.")
+            scaled_predictions = selected_predictions.detach().cpu().tolist()
             for row_idx, model_head in enumerate(task_heads):
                 sample_meta = samples[cursor + row_idx]
-                y_pred_scaled = float(outputs[model_head][row_idx].detach().cpu())
+                y_pred_scaled = float(scaled_predictions[row_idx])
                 scale_key = str(sample_meta.get("target_scale_key", GLOBAL_TARGET_SCALE_KEY))
                 y_pred = (
                     y_pred_scaled

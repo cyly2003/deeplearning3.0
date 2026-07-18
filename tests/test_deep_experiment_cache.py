@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from qsar_tl.modeling.dataset import AggregatedTaskDataset
-from qsar_tl.modeling.network import DeepModelConfig, EcotoxMultiTaskNetwork
+from qsar_tl.modeling.network import DeepModelConfig, EcotoxMultiTaskNetwork, TOXICITY_BIN_LOGITS_KEY
 from qsar_tl.features.descriptor_groups import resolve_descriptor_group_indices
 from qsar_tl.features.molecular_graph import write_molecular_graph_cache
 from qsar_tl.features.padel import write_padel_feature_cache_from_csv
@@ -56,7 +56,7 @@ from qsar_tl.training.deep_experiment import (
     ZScoreCorrectionConfig,
     CensoredLossConfig,
 )
-from qsar_tl.training.deep_train import DeepTrainingConfig
+from qsar_tl.training.deep_train import DeepTrainingConfig, dataloader_runtime_options
 from qsar_tl.training.deep_train import collate_aggregated_task_batch
 from qsar_tl.training.train import build_run_dir
 
@@ -732,6 +732,43 @@ def test_predictions_include_metadata_and_raw_scale(tmp_path: Path) -> None:
     assert "y_pred_scaled" in predictions[0]
 
 
+def test_predictions_route_interleaved_heads_when_auxiliary_output_is_first() -> None:
+    task_heads = ["A", "B", "A", "B"]
+    samples = [
+        {
+            "sample_id": f"row-{idx}",
+            "split_part": "test",
+            "task_head": task_head,
+            "molecular_numeric": [float(idx)],
+            "fingerprint": [1.0, 0.0],
+            "categorical_ids": {},
+            "target_value": float(idx),
+        }
+        for idx, task_head in enumerate(task_heads)
+    ]
+    dataset = AggregatedTaskDataset(samples=samples, fingerprint_size=2)
+
+    class InterleavedModel(torch.nn.Module):
+        def forward(self, molecular_numeric, fingerprint, categorical_ids, adapter_ids=None):
+            del fingerprint, categorical_ids, adapter_ids
+            row = torch.arange(molecular_numeric.shape[0], dtype=torch.float32)
+            return {
+                TOXICITY_BIN_LOGITS_KEY: torch.zeros((molecular_numeric.shape[0], 3)),
+                "A": row + 10.0,
+                "B": row + 20.0,
+            }
+
+    predictions = predict_all(
+        InterleavedModel(),
+        dataset,
+        samples,
+        batch_size=4,
+        device=torch.device("cpu"),
+    )
+
+    assert [row["y_pred_scaled"] for row in predictions] == [10.0, 21.0, 12.0, 23.0]
+
+
 def test_effect_level_metrics_keep_x_levels_separate() -> None:
     predictions = [
         {
@@ -818,6 +855,46 @@ def test_source_similarity_weighting_upweights_target_like_source_samples() -> N
     assert summary["applied"] is True
     assert samples[0]["sample_weight"] > samples[1]["sample_weight"]
     assert samples[2]["sample_weight"] == 1.0
+
+
+def test_source_similarity_weight_cache_is_exact_and_reusable(tmp_path: Path) -> None:
+    samples = [
+        {"sample_id": "source-a", "split_part": "train", "medium_domain": "aquatic", "fingerprint": [1.0, 0.0]},
+        {"sample_id": "source-b", "split_part": "train", "medium_domain": "aquatic", "fingerprint": [0.0, 1.0]},
+        {"sample_id": "target", "split_part": "finetune", "medium_domain": "soil", "fingerprint": [1.0, 0.0]},
+    ]
+    config = SourceWeightingConfig(enabled=True, method="tanimoto_to_finetune", alpha=1.0)
+
+    cold = apply_source_similarity_weights(samples, config, cache_dir=tmp_path)
+    cold_weights = [sample["sample_weight"] for sample in samples]
+    warm = apply_source_similarity_weights(samples, config, cache_dir=tmp_path)
+
+    assert cold["cache_hit"] is False
+    assert warm["cache_hit"] is True
+    assert warm["cache_key"] == cold["cache_key"]
+    assert [sample["sample_weight"] for sample in samples] == cold_weights
+    assert Path(str(warm["cache_path"])).exists()
+
+    samples[0]["fingerprint"] = [0.0, 1.0]
+    changed = apply_source_similarity_weights(samples, config, cache_dir=tmp_path)
+    assert changed["cache_hit"] is False
+    assert changed["cache_key"] != cold["cache_key"]
+
+
+def test_dataloader_runtime_options_enable_cuda_prefetch_only_with_workers() -> None:
+    assert dataloader_runtime_options("cpu", 0) == {"num_workers": 0, "pin_memory": False}
+    assert dataloader_runtime_options("cuda:0", 0) == {"num_workers": 0, "pin_memory": True}
+    assert dataloader_runtime_options("cuda:0", 4) == {
+        "num_workers": 4,
+        "pin_memory": True,
+        "prefetch_factor": 2,
+    }
+    assert dataloader_runtime_options("cuda:0", 4, persistent_workers=True) == {
+        "num_workers": 4,
+        "pin_memory": True,
+        "prefetch_factor": 2,
+        "persistent_workers": True,
+    }
 
 
 def test_proxy_distance_weighting_upweights_proxy_near_source_samples() -> None:
