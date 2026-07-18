@@ -8,6 +8,7 @@ PYTHON="${PYTHON:-/opt/anaconda3/envs/qsar-ph3/bin/python}"
 OUT_ROOT="${OUT_ROOT:-outputs/experiments/v1_2_39_transfer_optimization_matrix_remote}"
 SUMMARY_DIR="${SUMMARY_DIR:-outputs/experiments/v1_2_39_transfer_optimization_matrix_summary}"
 RUN_MULTI_SEED="${RUN_MULTI_SEED:-1}"
+RUN_PREFLIGHT="${RUN_PREFLIGHT:-1}"
 SCREEN_SEED="${SCREEN_SEED:-42}"
 REFIT_SEEDS=(2042 3407 8417)
 
@@ -53,6 +54,33 @@ run_cell() {
     bash scripts/run_v1_2_39_ptox_to_soil_mgkg_3stage_remote.sh formal
   echo "[matrix_done] cell=$cell seed=$seed time=$(date -Is)"
 }
+
+run_preflight() {
+  local label="$1"
+  local replay="$2"
+  local adapter="$3"
+  echo "[preflight_start] label=$label time=$(date -Is)"
+  env \
+    MODEL_SEED_OVERRIDE="$SCREEN_SEED" \
+    OUT_ROOT_OVERRIDE="${OUT_ROOT}_smoke" \
+    RUN_NAME_OVERRIDE="transfer_matrix_preflight_${label}_seed${SCREEN_SEED}" \
+    FINETUNE_MGKG_FREEZE_OVERRIDE=last_trunk \
+    FINETUNE_MGKG_BATCH_SIZE_OVERRIDE=256 \
+    FINETUNE_MGKG_LEARNING_RATE_OVERRIDE=0.0005 \
+    FINETUNE_MGKG_TRUNK_LEARNING_RATE_OVERRIDE=0.00003 \
+    FINETUNE_MGKG_HEAD_ONLY_EPOCHS_OVERRIDE=0 \
+    FINETUNE_MGKG_REPLAY_FRACTION_OVERRIDE="$replay" \
+    FINETUNE_MGKG_TOXICITY_BIN_LOSS_WEIGHT_OVERRIDE=0 \
+    MGKG_RESIDUAL_ADAPTER_OVERRIDE="$adapter" \
+    MGKG_RESIDUAL_ADAPTER_BOTTLENECK_OVERRIDE=64 \
+    bash scripts/run_v1_2_39_ptox_to_soil_mgkg_3stage_remote.sh smoke
+  echo "[preflight_done] label=$label time=$(date -Is)"
+}
+
+if [[ "$RUN_PREFLIGHT" == "1" ]]; then
+  run_preflight T4_replay 0.25 0
+  run_preflight T5_adapter 0 1
+fi
 
 for cell in T0 T1 T2 T3 T4 T5; do
   run_cell "$cell" "$SCREEN_SEED"
