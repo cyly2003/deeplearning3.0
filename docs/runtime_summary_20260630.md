@@ -9,6 +9,7 @@
 | v1.2.15 random transfer | 32 | 17.31 | 32.45 | 33.05 | 13.00 | 37.07 |
 | v1.2.18 fixed C ablation | 50 | 26.50 | 31.80 | 31.90 | 22.37 | 38.12 |
 | v1.2.19 single-domain BCE | 70 | 20.03 | 17.17 | 16.10 | 1.62 | 34.73 |
+| v1.2.21 random split ablation | 60 | 33.56 | 33.56 | NA | 22.75 | 38.92 |
 
 ## v1.2.18 固定 Chemical-Holdout 消融耗时
 
@@ -47,11 +48,13 @@
 - 模块消融：`no_context`、`no_species_lifestage`、`no_molecular_residual`。
 - 策略消融：`no_source_weighting`、`no_toxicity_binning`、`no_censored_loss`。
 
-启动状态：
+完成状态：
 
 - 启动时间：2026-06-30 16:55 (+08:00)。
+- 完成时间：2026-07-02 02:34 (+08:00)。
 - log：`outputs/logs/run_v1_2_21_random_split_ablation_priority_20260630_165543.log`。
-- pidfile：`outputs/logs/run_v1_2_21_random_split_ablation_priority_20260630_165543.pid`。
-- 当前首个正式 run：`random8_2_ablation_no_context_seed42_cebin_lw0025_censored_w0p01`。
+- run_times：`outputs/logs/run_v1_2_21_random_split_ablation_times.csv`。
+- 完成：60/60 run，exit_code 全部为 0。
+- 结果摘要：`docs/v1_2_21_random_split_ablation_summary.md`。
 
 注意：前台 smoke 因 SSH 超时中断了命令会话；已完成的 smoke 产物已迁移到 `_smoke` 输出根目录，正式 `v1_2_21_random_split_ablation_remote` 根目录不包含 smoke run。

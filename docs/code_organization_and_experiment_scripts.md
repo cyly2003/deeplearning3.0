@@ -68,6 +68,10 @@ Current sensitivity-only launcher:
 
 - `scripts/run_v1_2_13_anchor_validation_policy_remote.sh`
 
+Current soil mg/kg target-scale local补跑 launcher:
+
+- `scripts/run_v1_2_38_soil_mgkg_random_local.ps1`
+
 ### Summary and audit scripts
 
 These scripts are mostly read-only with respect to the source database and write

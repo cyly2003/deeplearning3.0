@@ -1,6 +1,399 @@
 # Project Status
 
-更新时间：2026-06-30 16:55 (+08:00)
+更新时间：2026-07-18 00:40 (+08:00)
+
+## 2026-07-18 v1.2.38 本地土壤 mg/kg 目标尺度补跑完成
+
+- 远端服务器已不可用，本次改为本地 `.venv-cuda\Scripts\python.exe` 和 `configs\experiment.local.cuda3050ti.yaml` 执行。
+- 新增本地 launcher：`scripts/run_v1_2_38_soil_mgkg_random_local.ps1`；源表为 `aggregated_task_records_soil_mg_kg_qc`，目标尺度为 `neg_log10_mg_kg`。
+- 已生成独立 split：`SoilMgkgQC2_B_random_8_2` 与 `SoilMgkgQC2_E_random_5fold_fold1-5`，未覆盖土壤 pTox 主线 split。
+- smoke 初次使用远端配置时因 Windows DataLoader 多进程权限失败；切换本地配置 `num_workers=0` 后 smoke 通过。
+- formal seed42 本地 6/6 run 完成：random 8:2 + random 5-fold。
+- all test prediction rows 指标：random 8:2 `n=3054`，R2 `0.6582`，RMSE `0.7888`，MAE `0.5704`；5-fold 合并 `n=15236`，R2 `0.6526`，RMSE `0.7859`，MAE `0.5637`。
+- 解释边界：这是土壤 `mg/kg` 独立目标尺度的随机划分可行性证据，不是 pTox-to-mg/kg 换算证据，也不能直接作为土壤风险限值结论。下一步应做 multi-seed 和 scaffold/similarity-cluster 验证。
+
+更新时间：2026-07-12 12:49 (+08:00)
+
+## 2026-07-12 服务器到期前远端结果保全与“实验汇总”补齐
+
+- 远端项目 `/home/easyai/DL1/ecotox_qsar_transfer` 仍可访问；本次重新比对远端 `outputs/experiments` 与本地目录后，补拉了本地缺失的正式轻量结果：`runtime_summaries`、`v1_2_7_censored_ordinal_ad_first_batch_remote_summary`、`v1_2_15_random_split_policy_remote_summary`。
+- 同步了关键日志/时间记录：v1.2.24 完整完成日志与 times CSV、v1.2.31/v1.2.33 分子信号日志与 times CSV、v1.2.34-v1.2.36 队列 nohup 日志。v1.2.24 本地旧日志长度较短，已用远端完整日志覆盖。
+- 已按中文目录体系复制到 `实验汇总`：
+  - `实验汇总/13_结构骨架聚类外推审计_v1_2_24/远端训练结果_summary`：v1.2.24 完整远端 summary，20 个文件，含 ensemble 总表和逐行预测。
+  - `实验汇总/分子信号强度探索_20260707/远端摘要明细`：v1.2.31-v1.2.36 summary 明细，共 40 个文件。
+  - `实验汇总/18_历史策略与方法筛选_正式摘要_v1_2_7_v1_2_15`：v1.2.7/v1.2.15 早期正式 summary，共 20 个文件（含 README）；仅作方法筛选追溯，不并入当前主线。
+  - `实验汇总/10_运行时间记录`：新增 runtime_by_strategy、v1.2.24/v1.2.31/v1.2.33-v1.2.36 times CSV，并新增 `服务器到期补拉日志_20260712`。
+- 新增保全说明与清单：`实验汇总/00_主线结果总览与追溯文档/服务器到期结果保全说明_20260712.md` 和 `服务器到期结果保全清单_20260712.csv`。
+- 未批量拉回 v1.2.31-v1.2.36 raw 训练树和模型权重；这些目录主要是大型中间文件/权重/完整预测，当前 summary、audit、runtime 与必要逐行表已足够支撑现有结论。若后续需要重建图或重新聚合，可按 `docs/mainline_remote_inventory_20260710.md` 定向拉取。
+
+## 2026-07-10 远端结果盘点、主线版本边界与清理候选
+
+- 远端只读状态：`/home/easyai/DL1/ecotox_qsar_transfer` 可访问；RTX 4060 Ti 当前基本空闲，未发现实际训练进程。`pgrep` 只见系统/查询进程和 NVIDIA 队列线程；`nvidia-smi` 显示 GPU 使用约 4%、显存约 586/16380 MiB。
+- 已拉回本地缺失的最新 summary 与 runtime 文件：
+  - `outputs/experiments/v1_2_34_padel_descriptor_remote_summary`
+  - `outputs/experiments/v1_2_35_padel_prior_clustered_remote_summary`
+  - `outputs/experiments/v1_2_36_graph_only_remote_summary`
+  - `outputs/logs/run_v1_2_34_padel_descriptor_times.csv`
+  - `outputs/logs/run_v1_2_35_padel_prior_clustered_times.csv`
+  - `outputs/logs/run_v1_2_36_graph_only_times.csv`
+- 新拉回 summary 的审计状态均通过：required files present，exit_code `0`，aquatic_eval_rows `0`。总训练耗时约：v1.2.34 `5493 s`，v1.2.35 `5109 s`，v1.2.36 `3419 s`。
+- 当前“最优版本号”必须按评价边界回答，不能合并成单个版本：
+  - 随机插值/当前论文主性能边界：`v1.2.22`。no-metal random 8:2 5-seed ensemble：`n=2608`，R2 `0.7895`，RMSE `0.8865`，MAE `0.6243`；no-metal random 5-fold 5-seed ensemble：`n=13063`，R2 `0.7920`，RMSE `0.8899`，MAE `0.6200`。
+  - 结构族外推压力测试：`v1.2.24`。scaffold/similarity-cluster holdout 5-seed ensemble：`n=2493`，R2 `0.1810`，RMSE `1.4063`，MAE `1.0664`；scaffold/similarity-cluster 5-fold：`n=11459`，R2 `0.3664`，RMSE `1.4808`，MAE `1.1178`。
+  - 分子信号机制旁支：`v1.2.33-v1.2.36` 只作为诊断证据，不替代主线。`v1.2.33` RDKit full 是当前分子输入主模型对照；`v1.2.35` PaDEL prior clustered 在 random8_2 接近 RDKit full，但 scaffold 外推仍弱；`v1.2.34` PaDEL raw 和 `v1.2.36` graph-only 均不能作为主线替代。
+- 未批量拉回 raw 训练目录：远端 raw 目录包含大体积 `predictions.csv` 与模型权重，`v1.2.31` 约 684 MB，`v1.2.33` 约 1.4 GB，`v1.2.34-v1.2.36` 各约 0.34 GB，`v1.2.26` 约 6.1 GB。当前主线判定使用 summary、ensemble prediction rows、audit 和 runtime 文件已足够；若后续需要重新聚合预测行或重建图，再定向拉取。
+- 清理动作暂未执行。候选清单与保留/归档原则已写入 `docs/mainline_remote_inventory_20260710.md`：smoke/debug、probe/interim、早期 pilot 和不支撑当前主线结论的 raw 训练目录建议归档优先，不直接删除。
+
+## 2026-07-08 v1.2.34-v1.2.36 PaDEL/graph 分子信号旁支完成
+
+- 远端队列状态：`scripts/queue_v1_2_34_35_padel_after_graph_remote.sh` 已完成，GPU 当前空闲；v1.2.34 PaDEL raw 与 v1.2.35 PaDEL prior clustered 均 2/2 priority runs exit 0。v1.2.34 第一次启动在 2026-07-07 16:46 因 PaDEL cache miss descriptor 行宽不一致失败一次，修复后 16:57 重启并完成；该失败未产生有效指标。
+- `v1.2.34` PaDEL raw descriptor：
+  - random8_2 test：`n=2608`，R2 `0.7157`，RMSE `1.0302`，MAE `0.7270`。
+  - scaffold_cluster_8_2 test：`n=2493`，R2 `-0.0731`，RMSE `1.6097`，MAE `1.2350`。
+  - 解释：raw PaDEL 1444 维直接输入不优于 RDKit full，scaffold 外推明显变差，不能作为当前主线替代。
+- `v1.2.35` PaDEL prior clustered head：
+  - random8_2 test：`n=2608`，R2 `0.7646`，RMSE `0.9374`，MAE `0.6670`。
+  - scaffold_cluster_8_2 test：`n=2493`，R2 `0.0726`，RMSE `1.4964`，MAE `1.1464`。
+  - 解释：先验聚类 head 明显修复 raw PaDEL 的过宽 descriptor 输入问题，random8_2 接近 RDKit full；但 scaffold 外推仍弱于 RDKit full/graph-only，不建议替换主线。
+- `v1.2.36` graph-only：
+  - random8_2 test：`n=2608`，R2 `0.6717`，RMSE `1.1071`，MAE `0.7987`。
+  - scaffold_cluster_8_2 test：`n=2493`，R2 `0.0779`，RMSE `1.4922`，MAE `1.1254`。
+  - 解释：仅用 molecular graph（无 descriptor、无 Morgan）仍有分子信号，但性能低于 full；scaffold MAE 与 PaDEL prior 接近且略好。
+- 当前结论：分子信号没有被物种/上下文 embedding 完全遮蔽；但主线性能不是由单一 RDKit descriptor 驱动。Morgan fingerprint 在 random 插值中贡献大，RDKit descriptor/graph/prior-clustered PaDEL 在 scaffold 外推中保留一定结构信号。论文表述应定位为 context-aware / species-informed QSAR，而非传统 descriptor-only QSAR。
+
+## 2026-07-07 v1.2.33-v1.2.36 分子信号补跑队列启动
+
+- 目标：按用户确认的“分子信号强度探索”边界补跑当前缺口，并启动 PaDEL/graph 旁支；最佳性能模型仍可 ensemble，机制/消融默认 seed `2042`。
+- 已启动 v1.2.33 RDKit 分子信号消融 priority 队列：
+  - 脚本：`scripts/run_v1_2_33_molecular_signal_ablation_remote.sh`。
+  - 输出根：`outputs/experiments/v1_2_33_molecular_signal_ablation_remote`。
+  - summary 根：`outputs/experiments/v1_2_33_molecular_signal_ablation_remote_summary`。
+  - 范围：no-metal `random8_2` 与 `scaffold_cluster_8_2`，seed `2042`，`full`、`no_descriptors`、`no_fingerprint`、`descriptors_only`。
+  - 远端状态：2026-07-07 15:44 已完成 priority 队列；`random8_2` 与 `scaffold_cluster_8_2` 各 4 个对照共 8/8 run 全部 exit 0，并已生成 `outputs/experiments/v1_2_33_molecular_signal_ablation_remote_summary`。
+- PaDEL 分支准备：
+  - 本地已安装 `padelpy==0.1.16`。
+  - `scripts/build_padel_feature_cache.py` 已支持从 SQLite 读取唯一 SMILES 并用 PaDEL 2D descriptor 生成训练 JSONL cache；smoke 通过，3 个 SMILES 生成 1444 个 descriptor。
+  - 全量 PaDEL 2D cache 已完成并同步远端：`outputs/features/molecular_features_padel_morgan512.jsonl`，`rows_written=6353/6353`，`descriptor_count=1444`，`descriptor_generation_failures=0`，`morgan_fingerprint_failures=0`。manifest 记录 `missing_descriptor_values=353986`、`nonfinite_descriptor_values=451`，后续解释 PaDEL 描述符时需保留缺失/非有限值审计。
+  - 配置：`configs/experiment.remote.easyai.padel.yaml`（raw descriptor）与 `configs/experiment.remote.easyai.padel_prior_clustered.yaml`（`prior_clustered_heads`）。
+  - launcher：`scripts/run_v1_2_34_padel_molecular_signal_remote.sh`，默认可用于 PaDEL raw；prior clustered 通过 `CONFIG`、`RUN_VERSION`、`EXPERIMENT_LABEL` 环境变量切换。
+  - 本地自动队列监控已触发同步并启动远端 `scripts/queue_v1_2_34_35_padel_after_graph_remote.sh`；graph-only 完成后 PaDEL raw 已启动。
+  - 集成修复：PaDEL cache miss/缺失 SMILES 会按 1444 维 cache schema 补零，不再退回 8 维 RDKit/fallback descriptor；PaDEL 极端 descriptor 原始值在统计与样本构建前统一裁剪到 `±1e12`，避免均值/方差 overflow。`tests/test_deep_experiment_cache.py` 当前 47 passed。
+  - 远端状态：第一次 v1.2.34 raw 因 descriptor 行宽不一致退出；修复同步后于 2026-07-07 16:57 重新启动 `random8_2_full_seed2042_padel_descriptor`，当前进程处于 PaDEL 高维特征预处理/训练启动阶段，CPU 100%、RSS 约 7.3 GB，尚未进入 GPU epoch。v1.2.35 prior clustered 仍排在 v1.2.34 raw 后。
+- graph-only 分支准备并排队：
+  - graph cache 已生成：`outputs/features/molecular_graphs_no_metal_inorganic.jsonl`，6353/6353 unique SMILES written，failures=0。
+  - 训练接口已接入纯 PyTorch message-passing graph encoder；新增 ablation `graph_only_molecule`，语义为不用 descriptor、不用 Morgan fingerprint，但保留物种/上下文 embedding。
+  - 配置：`configs/experiment.remote.easyai.graph_only.yaml`。
+  - launcher：`scripts/run_v1_2_36_graph_only_remote.sh`。
+  - 排队脚本：`scripts/queue_v1_2_36_graph_only_after_v1_2_33_remote.sh` 已在远端启动；v1.2.33 完成后已于 2026-07-07 15:47 启动 graph-only priority。`random8_2_graph_only_molecule_seed2042_graph_only_molecule` 于 16:17 exit 0，`scaffold_cluster_8_2_graph_only_molecule_seed2042_graph_only_molecule` 于 16:44 exit 0，priority 队列完成。
+- 验证：
+  - `py_compile` 覆盖 `network.py`、`deep_train.py`、`deep_experiment.py`、PaDEL/graph feature 脚本，通过。
+  - 三份配置 `experiment.remote.easyai.padel.yaml`、`experiment.remote.easyai.padel_prior_clustered.yaml`、`experiment.remote.easyai.graph_only.yaml` 均 `validate-config` 通过。
+  - graph encoder 合成 batch 前向/反向通过。
+
+## 2026-07-07 v1.2.32 分子信号强度探索汇总与 PaDEL/graph 旁支准备
+
+- 目标：回应 Fig.3 SHAP 与敏感性结果之间的解释张力，系统整理“物种/上下文 embedding 是否压过分子信号”的当前证据，并为 PaDEL 描述符、PaDEL 先验聚类 head、molecular graph-only 分子输入保留旁支接口。
+- 重要边界更新：用户已明确固定化学留出 `v1.2.18`（CAS-number 项目）后续不再考虑。当前汇总中 `v1.2.18` 只作为 `excluded_historical` 来源记录，不能用于当前结论、coverage 或补跑优先级。
+- 第一阶段已完成，只读取现有结果，不补跑：
+  - 汇总目录：`实验汇总/分子信号强度探索_20260707`。
+  - 入口：`实验汇总/分子信号强度探索_20260707/README.md`。
+  - 表格：`source_manifest.csv`、`molecular_signal_overall_metrics.csv`、`ablation_coverage_matrix.csv`、`rerun_gap_matrix.csv`。
+  - 生成脚本：`scripts/build_molecular_signal_strength_summary.py`。
+- 当前证据边界内可用结论：
+  - `no_context` 与 `no_species_lifestage` 在随机插值下仍是最大/次大损失项，支持物种/上下文 embedding 信息量很强。
+  - `no_molecular_size_descriptors` 在 no-metal random 8:2 下 MAE `-0.0068`、R2 `+0.0023`，在 scaffold-cluster 8:2 下 MAE `+0.0194`、R2 `-0.0217`；不支持“模型主要靠 MolWt/分子大小耦合获得性能”的结论。
+  - 排除 `v1.2.18` 后，当前边界缺少 `no_descriptors`、`no_fingerprint`、`descriptors_only` 的有效对照。
+- 推荐最小补跑矩阵：seed `2042`，先跑 no-metal `random_8_2` 与 `scaffold_cluster_8_2` 上的 `no_descriptors`、`no_fingerprint`、`descriptors_only`。最佳性能/最终模型仍可使用 ensemble；机制消融和诊断消融默认单 seed2042。
+- 第二阶段旁支已完成最小实现，不改变主线默认行为：
+  - PaDEL CSV/JAR 到兼容 JSONL 缓存：`qsar_tl/features/padel.py`，命令行入口 `scripts/build_padel_feature_cache.py`。
+  - descriptor prior grouping：`qsar_tl/features/descriptor_groups.py`，模板 `configs/padel_descriptor_clusters.example.yaml`。
+  - 可选 descriptor head：`EcotoxMultiTaskNetwork` 支持 `raw`（默认不变）、`dense_head`、`prior_clustered_heads`。
+  - graph 预留接口：`qsar_tl/features/molecular_graph.py`，命令行入口 `scripts/build_molecular_graph_cache.py`；当前仅生成 graph cache，不接入训练循环。
+  - 设计说明：`docs/molecular_signal_strength_padel_graph_branch_design_20260707.md`。
+- 兼容性修正：训练路径现在从 molecular feature cache 读取 `descriptor_names`，并在 `preprocessing.json` 记录；`no_molecular_size_descriptors`、toxicity-bin 分子量读取、proxy-distance source weighting 和 descriptor group 解析均改为 name-based，避免 PaDEL 描述符顺序改变造成隐性错误。
+- 验证：
+  - `E:\TOOLS\anaconda\python.exe -m py_compile qsar_tl\modeling\network.py qsar_tl\training\deep_experiment.py qsar_tl\features\descriptor_groups.py qsar_tl\features\padel.py qsar_tl\features\molecular_graph.py scripts\build_padel_feature_cache.py scripts\build_molecular_graph_cache.py scripts\build_molecular_signal_strength_summary.py scripts\explain_deep_model.py` 通过。
+  - `E:\TOOLS\anaconda\python.exe -m pytest tests\test_deep_experiment_cache.py tests\test_traditional_ml_descriptor_effect_baselines.py` 通过：51 passed，1 个 PyTorch/NumPy warning。
+  - `E:\TOOLS\anaconda\envs\qsar-ph3\python.exe scripts\build_molecular_signal_strength_summary.py` 通过并生成汇总包。
+
+## 2026-07-07 v1.2.31 分子量/分子大小描述符敏感性验证 priority 队列完成
+
+- 背景：`mg/L -> mol/L -> pTox` 换算使用分子量，公式上 `pTox = -log10(mg/L) + 3 + log10(MW)`；同时模型输入中包含 `MolWt` 和其他分子大小相关描述符，因此需要验证模型性能是否主要依赖该目标尺度耦合。
+- 深度模型新增 ablation：`no_molecular_size_descriptors`，只遮蔽 `MolWt`、`TPSA`、`HeavyAtomCount`、`NumHAcceptors`、`NumHDonors`、`RingCount`、`RotatableBonds`，保留 Morgan fingerprint、`MolLogP`、物种/上下文、source weighting、toxicity binning 和 censored loss。
+- 传统 ML baseline 新增参数：`--descriptor-sensitivity drop_molecular_size_related`，用于在 descriptor-only baseline 中删除更宽泛的分子量/分子大小/表面积/环柔性/VSA/Chi/BCUT 代理列；默认仍为 `full`，不改变 v1.2.28-v1.2.30 可复现性。
+- 新增 launcher：`scripts/run_v1_2_31_molecular_size_sensitivity_remote.sh`。
+  - `priority`：seed2042 下跑 no-metal random 8:2 与 scaffold/similarity-cluster holdout，各自对比 `full` 和 `no_molecular_size_descriptors`。
+  - `random` / `scaffold` / `all`：扩展到 random 5-fold、scaffold 5-fold 或完整矩阵。
+  - 计划输出根：`outputs/experiments/v1_2_31_molecular_size_sensitivity_remote`；汇总根：`outputs/experiments/v1_2_31_molecular_size_sensitivity_remote_summary`。
+- 远端启动：2026-07-07 01:35 (+08:00) 已同步代码并 detached 启动 `priority` 队列。
+  - 主进程：PID `405007`。
+  - 日志：`outputs/logs/run_v1_2_31_molecular_size_sensitivity_20260707_013548.log`。
+  - 当前首个 run：`random8_2_full_seed2042_molecular_size_sensitivity`，split 为 `M_v2_aquatic_to_soil_ptox_no_metal_adapt_B_random_8_2_f100`。
+- 运行完成：2026-07-07 03:15 (+08:00)，4/4 formal runs 完成，exit_code 全部为 0。
+  - summary：`outputs/experiments/v1_2_31_molecular_size_sensitivity_remote_summary`。
+  - runtime：`outputs/logs/run_v1_2_31_molecular_size_sensitivity_times.csv`。
+  - 摘要：`docs/v1_2_31_molecular_size_sensitivity_summary.md`。
+- test 指标：
+  - no-metal random 8:2 full：`n=2608`，R2 `0.7635`，RMSE `0.9397`，MAE `0.6724`。
+  - no-metal random 8:2 no_molecular_size_descriptors：`n=2608`，R2 `0.7658`，RMSE `0.9350`，MAE `0.6656`；相对 full，MAE `-0.0068`、R2 `+0.0023`。
+  - scaffold/similarity-cluster holdout full：`n=2493`，R2 `0.1204`，RMSE `1.4574`，MAE `1.1114`。
+  - scaffold/similarity-cluster holdout no_molecular_size_descriptors：`n=2493`，R2 `0.0988`，RMSE `1.4752`，MAE `1.1308`；相对 full，MAE `+0.0194`、R2 `-0.0217`。
+- 当前结论：随机插值下删掉分子大小描述符没有损失，反而略好；scaffold 结构族外推下有小幅损失，但远小于总体外推误差。该结果不支持“模型主要靠分子量换算耦合取得性能”的担忧；但 `MolWt`/分子大小特征解释仍需降调为“化学结构/分子大小代理，且部分与 pTox 单位换算尺度耦合”，不能写成独立机制证明。
+- 后续：内部决策暂不需要立即扩展 full 5-fold；若要作为论文定量敏感性结论，建议补 scaffold 5-fold 或多 seed。
+
+## 2026-07-06 v1.2.24 scaffold/similarity-cluster 外推汇总同步并纳入 Figure 2
+
+- 背景：Figure 2 需要同时展示随机验证边界与 scaffold/similarity-cluster 结构族外推边界，并补充每种验证边界下的子任务表现雷达图。
+- 数据同步：已从远端同步 `outputs/experiments/v1_2_24_scaffold_cluster_holdout_mainline_remote_summary` 到本地；该目录包含 combined summary、fold summary、holdout/5-fold ensemble prediction rows、family/effect/toxicity-bin/task 汇总。
+- 关键 ensemble 指标：
+  - scaffold/similarity-cluster holdout：`n=2493`，`R²=0.1810`，`MAE=1.0664`，`Huber loss=0.6746`。
+  - scaffold/similarity-cluster cross-validation：`n=11459`，`R²=0.3664`，`MAE=1.1178`，`Huber loss=0.7224`。
+- Figure 2 已更新：
+  - 组图：`outputs/paper_figures/fig2_selected_model_performance/fig2_selected_model_performance_composite.svg/png`。
+  - 独立子图：4 个预测诊断面板 + 4 个任务级雷达图面板，均位于 `outputs/paper_figures/fig2_selected_model_performance/panels`。
+  - 任务雷达数据与任务代码映射：`outputs/paper_figures/fig2_selected_model_performance/tables/fig2_task_radar_data.csv` 和 `fig2_task_code_mapping.csv`。
+- 解释边界：scaffold/similarity-cluster 结果是结构族外推压力测试，性能显著低于随机验证是预期现象，应解释为新结构族泛化难度增加，而不是直接作为训练失败。随机验证仍用于同分布/近同分布插值表现，二者不能混成同一类验证结论。
+
+## 2026-07-06 v1.2.30 水相物种-终点传统 ML 扩展 baseline 完成
+
+- 背景：用户确认水相 v1.2.28 top 30 物种-终点组合也不是全量。数据库核查显示：水相 `n>=200` 有 199 个物种-终点组合、97 个物种；`n>=100` 有 407 个组合、199 个物种；`n>=50` 有 781 个组合、384 个物种。
+- 目标：先补跑计算量可控且验证集较稳的水相 `n>=200` 物种-终点传统机器学习 baseline，保持与 v1.2.28/v1.2.29 相同特征策略和模型集合。
+- 数据与划分：
+  - 源表：`aggregated_task_records_aquatic_ptox_qc`。
+  - 子任务：全部 `n>=200` 的水相物种-终点组合，共 199 个。
+  - 物种数：97 个。
+  - 划分：每个子任务内 seed=42 row-random 8:2；`min_train=160`、`min_validation=40`。
+- 模型：XGBoost、LightGBM、Random Forest、KNN、PLS；Optuna TPE `n_trials=3`。
+- 输出：
+  - 原始输出根：`outputs/experiments/v1_2_30_aquatic_species_endpoint_ml_descriptor_effect_n200`。
+  - 汇总目录：`实验汇总/机器学习基线_分子描述符效应水平_水相扩展n200`。
+  - 图表：995 个模型散点图，每个 PNG/SVG，共 1,990 个图文件。
+  - 描述符表：199 个子任务 compound descriptor table。
+  - 摘要：`docs/v1_2_30_aquatic_species_endpoint_ml_n200_summary.md`。
+- 完成情况：995/995 模型完成，skipped=0。
+- 水相扩展版总体模型排序（按 weighted validation RMSE）：LightGBM `0.8778`、XGBoost `0.8798`、Random Forest `0.9101`、KNN `0.9762`、PLS `1.3223`。
+- best-by-subtask 数：XGBoost 91、LightGBM 64、Random Forest 24、KNN 13、PLS 7。
+- 解释边界：v1.2.30 是水相物种-终点内 row-random 插值 baseline，适合补图和描述符-only 传统 ML 对比；仍不代表跨物种、跨终点或新化合物外推能力。
+
+## 2026-07-06 v1.2.29 土壤物种-终点传统 ML 扩展 baseline 完成
+
+- 背景：用户指出 v1.2.28 土壤 top 30 物种-终点组合覆盖不够全。核查后确认 v1.2.28 土壤结果覆盖 30 个组合、12 个物种；若按 `n>=30` 阈值，土壤可扩展到 73 个组合、24 个物种。
+- 目标：补跑土壤域更完整的物种-终点传统机器学习 baseline，保持与 v1.2.28 相同特征策略和模型集合。
+- 数据与划分：
+  - 源表：`aggregated_task_records_soil_ptox_qc`。
+  - 子任务：全部 `n>=30` 的土壤物种-终点组合，共 73 个。
+  - 物种数：24 个。
+  - 划分：每个子任务内 seed=42 row-random 8:2；`min_train=24`、`min_validation=6`。
+- 模型：XGBoost、LightGBM、Random Forest、KNN、PLS；Optuna TPE `n_trials=3`。
+- 输出：
+  - 原始输出根：`outputs/experiments/v1_2_29_soil_species_endpoint_ml_descriptor_effect_n30`。
+  - 汇总目录：`实验汇总/机器学习基线_分子描述符效应水平_土壤扩展n30`。
+  - 图表：364 个模型散点图，每个 PNG/SVG，共 728 个图文件。
+  - 描述符表：73 个子任务 compound descriptor table。
+  - 摘要：`docs/v1_2_29_soil_species_endpoint_ml_n30_summary.md`。
+- 完成情况：365 个预期模型中 364 个完成；`Oryza sativa / ECx_GeneticDamage` 的 PLS 因 sklearn PLS 内部 NaN loading 退化被 skipped，保留审计记录。
+- 扩展版土壤总体模型排序（按 weighted validation RMSE）：XGBoost `1.0195`、Random Forest `1.0334`、KNN `1.0567`、LightGBM `1.1536`、PLS `1.2353`。
+- 解释边界：v1.2.29 比 v1.2.28 更适合做土壤物种覆盖和拼图素材；但因阈值降到 `n>=30`，许多子任务验证集较小，应作为扩展/探索性 baseline，正式结论仍优先参考样本更充足的物种-终点组合。
+
+## 2026-07-06 v1.2.28 物种-终点传统机器学习 baseline 完成
+
+- 目标：按“不同物种 × 不同毒性终点”单独建模，补齐 XGBoost、LightGBM、Random Forest、KNN、PLS 的传统机器学习对比；输入仅使用文献驱动筛选的 RDKit 2D 分子描述符并集和 `effect_level_x` 派生特征，不使用物种上下文、分类学、介质、终点标签或目标/浓度字段作为模型输入。
+- 执行环境：本地 `E:\TOOLS\anaconda\envs\qsar-ph3\python.exe`；Optuna TPE 贝叶斯调参，每个模型/子任务 `n_trials=3`；固定 seed=42。
+- 数据与划分：
+  - 水相：`aggregated_task_records_aquatic_ptox_qc`，281,395 条可建模记录。
+  - 土壤：`aggregated_task_records_soil_ptox_qc`，16,014 条可建模记录。
+  - 子任务：水相 top 30 个物种-终点组合、土壤 top 30 个物种-终点组合；每个组合内 row-random 8:2 train/validation。
+  - 特征：121 个输入特征，包括 117 个 RDKit QSAR 常用描述符和 4 个 effect-level 特征；缺失值仅用 train-only median 插补，零方差特征在训练折内移除。
+- 输出：
+  - 原始输出根：`outputs/experiments/v1_2_28_species_endpoint_ml_descriptor_effect_baselines_stable_pls`。
+  - 归档汇总：`实验汇总/机器学习基线_分子描述符效应水平`。
+  - 结构：`水生/<物种>/<终点>/图表|指标表|描述符表|预测值表` 与 `土壤/<物种>/<终点>/...`。
+  - 图表：299 个模型散点图，每个同时导出 PNG/SVG，共 598 个图文件；坐标轴、刻度、图例和指标文本加粗。
+  - 描述符表：60 个子任务各 1 份 compound descriptor table，便于后续相关性矩阵和应用域图。
+  - 特征选择依据：`特征选择依据/descriptor_selection_rationale.md` 和 `descriptor_selection_reference.csv`，列出 Hansch/Fujita、Randic、Kier/Hall、Balaban、Wildman/Crippen、Ertl、Labute、Todeschini/Consonni 等原始或经典文献依据。
+- 关键结果：
+  - 共 300 个预期模型组合中 299 个完成；`Oryza sativa / ECx_GeneticDamage` 的 PLS 因 sklearn PLS 内部数值退化被 skipped，输入矩阵和目标值均无 NaN，因此保留审计记录而不伪造结果。
+  - 水相模型总体排序（按加权 validation RMSE）：LightGBM `0.8374`、XGBoost `0.8465`、Random Forest `0.8684`、KNN `0.9428`、PLS `1.4661`。
+  - 土壤模型总体排序（按加权 validation RMSE）：XGBoost `0.9084`、Random Forest `0.9416`、KNN `0.9813`、LightGBM `1.0459`、PLS `1.1060`。
+  - 赤子爱胜蚓 `Eisenia fetida / ECx_Mortality`：XGBoost 最好，validation `R2=0.5704`、RMSE `1.5956`、MAE `1.1495`；`ECx_Growth` 等其他赤子爱胜蚓终点样本量不足，保留在低样本 skipped/描述符审计中。
+- 解释边界：该结果是子任务内 row-random 插值 baseline，适合回答“在固定物种和固定终点内，传统 ML 使用分子描述符+效应水平能拟合到什么程度”；不能作为跨物种、跨终点或新化合物/骨架外推证据。
+
+## 2026-07-03 v1.2.27 传统机器学习 descriptor+effect-level 本地基线完成
+
+- 目标：按用户要求补跑水相、土壤、不同物种、不同毒性终点的传统机器学习基线；输入仅使用 RDKit 2D 分子描述符和 `effect_level_x` 派生特征，不使用物种上下文、分类学、介质标签、终点标签或目标/浓度字段作为模型输入。
+- 执行环境：本地 `E:\TOOLS\anaconda\envs\qsar-ph3\python.exe`，Optuna TPE 贝叶斯调参；基础解释器 `E:\TOOLS\anaconda\python.exe` 的 SciPy/sklearn DLL 不可用，因此未使用。
+- 数据与划分：
+  - 水相：`aggregated_task_records_aquatic_ptox_qc`，281,395 条可建模记录。
+  - 土壤：`aggregated_task_records_soil_ptox_qc`，16,014 条可建模记录。
+  - 划分：固定 seed=42 的本地 row-random 8:2 train/validation；这是 descriptor-only 同分布插值基线，不作为 chemical/scaffold 外推证据。
+  - 子任务：水相 16 个、土壤 15 个；低样本或验证集不足组合写入 skipped audit。
+- 模型与调参：`LightGBM`、`ExtraTrees`，每个模型/子任务 4 次 Optuna TPE trial，以 validation RMSE 为目标；极端 RDKit descriptor 值 `abs(value)>1e12` 按缺失处理，缺失值用 train-only median 插补。
+- 输出：
+  - 原始输出根：`outputs/experiments/v1_2_27_traditional_ml_descriptor_effect_baselines`。
+  - 归档汇总：`实验汇总/12_传统机器学习基线_分子描述符效应水平`。
+  - 指标表：`traditional_ml_descriptor_effect_all_metrics.csv`、`traditional_ml_descriptor_effect_best_by_subtask.csv`、`traditional_ml_descriptor_effect_best_scope_summary.csv`、`traditional_ml_descriptor_effect_hpo_trials.csv`、`traditional_ml_descriptor_effect_skipped_subtasks.csv`。
+  - 图表：29 张 PNG + SVG，按 `图表/<domain>/<scope>/<task>/` 分类；每张为单任务 observed-vs-predicted 散点图，标题只标任务名，如 `ECx_Growth`。
+- 关键结果（best-by-subtask validation）：
+  - 水相总体：ExtraTrees `R2=0.5542`，RMSE `1.2623`，MAE `0.9601`。
+  - 土壤总体：LightGBM `R2=0.6098`，RMSE `1.1303`，MAE `0.8091`。
+  - 水相 endpoint 中 `ECx_Immobilization` 表现较强：LightGBM `R2=0.8341`，RMSE `0.8141`，MAE `0.5789`。
+  - 土壤 endpoint 中 `ECx_Growth` 表现较强：LightGBM `R2=0.7151`，RMSE `0.8576`，MAE `0.6476`。
+  - 物种和物种-终点内插值普遍高于总体，但这是过滤到特定物种/任务后的同分布拟合能力，不应解释为跨物种泛化。
+
+## 2026-07-03 v1.2.26 no-metal/inorganic 随机主线 targeted 消融完成
+
+- 目标：在 `v1.2.22` 去除金属/无机物后的随机划分主线上，复用 `v1.2.21` 的 targeted 消融项，检查模块/训练策略贡献排序是否仍与全数据随机插值场景一致。
+- 新增 launcher：`scripts/run_v1_2_26_no_metal_random_split_ablation_remote.sh`。
+  - 数据库：`outputs/derived/modeling_dataset_v2_0_0_rebuild_no_metal_inorganic.sqlite`。
+  - 源表：`aggregated_task_records_aquatic_soil_ptox_qc_no_metal_inorganic`。
+  - split：`M_v2_aquatic_to_soil_ptox_no_metal_adapt_B_random_8_2_f100` 与 `M_v2_aquatic_to_soil_ptox_no_metal_adapt_E_random_5fold_fold1-5_f100`。
+  - 消融项：`no_context`、`no_species_lifestage`、`no_molecular_residual`、`no_source_weighting`、`no_toxicity_binning`、`no_censored_loss`。
+  - 默认 seed：`2042`；设计为 random 8:2 6 run + random 5-fold 5×6 run，共 36 个 formal run。
+- seed 选择依据：`outputs/experiments/v1_2_22_no_metal_random_split_remote_summary/split_policy_run_summary.csv` 中，seed `2042` 同时是 no-metal random 8:2 和 random 5-fold 加权 MAE 最低的单模型 seed。
+  - random 8:2 seed2042：n=2608，R2=0.7673，RMSE=0.9320，MAE=0.6597，Huber=0.3376。
+  - random 5-fold seed2042：按 fold test n 加权 MAE=0.6554，RMSE=0.9322，Huber=0.3312。
+- 运行状态：
+  - 远端等待队列在 `v1.2.24` 结束后自动启动，2026-07-03 22:36:54 (+08:00) 完成 summarize。
+  - 36/36 formal runs 完成，exit_code 全部为 0。
+  - 总训练耗时 15.18 h，平均 25.30 min/run，范围 20.90-29.30 min/run。
+  - 等待日志：`outputs/logs/run_v1_2_26_no_metal_random_split_ablation_wait_20260703_010346.log`。
+  - run_times：`outputs/logs/run_v1_2_26_no_metal_random_split_ablation_times.csv`。
+  - 输出根：`outputs/experiments/v1_2_26_no_metal_random_split_ablation_remote`。
+  - 汇总根：`outputs/experiments/v1_2_26_no_metal_random_split_ablation_remote_summary`。
+- 结果摘要：`docs/v1_2_26_no_metal_random_split_ablation_summary.md`。
+- 远端验证与完整性：
+  - `bash -n scripts/run_v1_2_26_no_metal_random_split_ablation_remote.sh` 通过。
+  - 6 个 no-metal random transfer split 均已在远端 SQLite 中查到非零 split assignment。
+- 核心结果：相对于 v1.2.22 no-metal seed2042 full baseline，MAE 增量为：
+  - `no_context`：random 8:2 `+0.2131`，random 5-fold `+0.2366`，损失最大。
+  - `no_species_lifestage`：random 8:2 `+0.1040`，random 5-fold `+0.0952`，损失第二。
+  - `no_toxicity_binning`：random 8:2 `+0.0315`，random 5-fold `+0.0391`，中等损失。
+  - `no_source_weighting`：random 8:2 `+0.0091`，random 5-fold `+0.0133`，影响较小。
+  - `no_censored_loss`：random 8:2 `-0.0136`，random 5-fold `+0.0047`，接近 baseline。
+  - `no_molecular_residual`：random 8:2 `-0.0092`，random 5-fold `+0.0025`，接近 baseline。
+- 解释边界：该结果支持“有机物主导的随机插值场景下，context 与 species/lifestage 仍是主贡献源”；source weighting、censored loss、molecular residual 在随机插值下不是强贡献项。该结论不能替代 `v1.2.24` scaffold/cluster chemical-family 外推证据。
+
+## 2026-07-02 v1.2.24 scaffold/cluster chemical-family holdout 主线已启动
+
+- 目标：替代原 CAS 号 `C_chemical_holdout_8_2` 的科学性不足，用结构骨架与 fingerprint 相似性簇定义新化合物族外推边界，并用当前最优主线策略完整重跑。
+- 文献与方法依据：`docs/scaffold_cluster_split_method_20260702.md`。
+  - Bemis-Murcko scaffold 用于结构母核分组。
+  - Morgan/ECFP radius 2、2048 bits 用于 fingerprint 表征。
+  - Butina/Tanimoto similarity cluster 用于补充 scaffold 不能覆盖的高相似结构近邻。
+  - 默认阈值：Tanimoto similarity `0.65`；该阈值作为方法参数使用，最终合理性由 `tanimoto_leakage_summary.csv` 审计确认，而不是当作通用常数。
+- 新增脚本：
+  - `scripts/build_scaffold_cluster_splits.py`：本地 RDKit 构建结构组、写入 `G/H` split、输出审计。
+  - `scripts/import_split_assignments_csv.py`：远端无 RDKit 时，从 CSV 导入 split assignments。
+  - `scripts/run_v1_2_24_scaffold_cluster_holdout_remote.sh`：完整远端 launcher。
+- 本地 split/audit：
+  - 数据库：`outputs/derived/modeling_dataset_v2_0_0_rebuild_no_metal_inorganic.sqlite`。
+  - 土壤源表：`aggregated_task_records_soil_ptox_qc_no_metal_inorganic`。
+  - 审计目录：`outputs/experiments/v1_2_24_scaffold_cluster_holdout_mainline_audit`。
+  - 原始 no-metal soil rows：13,549。
+  - 可解析有机母体并纳入 scaffold/cluster split：11,992 rows，1,088 chemical units，550 structure groups。
+  - 无有机母体而排除：117 chemical units，1,557 rows，主要为 NaCl、硼酸、SO2、无机盐等残留。
+  - `G_scaffold_cluster_8_2`：train 9,136，test 2,856。
+  - `H_scaffold_cluster_5fold`：test 为 2,284 或 2,856，结构组不可拆分导致 fold3 较大。
+  - `structure_overlap_audit.csv`：所有 split 的 group/canonical parent/scaffold overlap 均为 0。
+  - `tanimoto_leakage_summary.csv`：holdout 无 test chemical 达到 `max_tanimoto_to_train >= 0.65`；5-fold 仅 fold4/fold5 有约 0.5% test chemical 略高于 0.65，均无 `>=0.80`。
+- 远端处理：
+  - 远端 `/opt/anaconda3/bin/python` 及已有 conda 环境均无 RDKit，因此结构 split 在本地生成，导出 `scaffold_cluster_split_assignments.csv` 后导入远端 SQLite。
+  - 远端 `bash -n scripts/run_v1_2_24_scaffold_cluster_holdout_remote.sh` 通过。
+  - 远端 `splits` 模式通过，生成 6 个 aquatic-to-soil transfer split；aquatic train 固定为 219,849。
+  - smoke 通过：`RUN_HOLDOUT=1 RUN_5FOLD=1 FOLDS=1 SMOKE_SEEDS=42`，1 epoch pretrain + 1 epoch finetune，两个 smoke run 均完成并 summarize。
+- 正式运行：
+  - 2026-07-02 19:17:04 (+08:00) 已启动完整 `ensemble_all` 后台队列。
+  - PID：`85458`。
+  - 日志：`outputs/logs/run_v1_2_24_scaffold_cluster_holdout_20260702_191704.log`。
+  - 输出根：`outputs/experiments/v1_2_24_scaffold_cluster_holdout_mainline_remote`。
+  - 汇总根：`outputs/experiments/v1_2_24_scaffold_cluster_holdout_mainline_remote_summary`。
+  - 设计：5 seeds × (`scaffold_cluster_8_2` holdout + `scaffold_cluster_5fold` fold1-5) = 30 formal runs。
+  - 当前首个正式 run：`no_metal_scaffold8_2_seed42_cebin_lw0025_censored_w0p01`。
+
+## 2026-07-02 v1.2.23 随机主线 CST-AD 完成
+
+- 目标：在不重新训练模型的前提下，直接使用已拉回本地的远端随机划分主线预测结果，构建 Chemical-Species-Task Applicability Domain (CST-AD) 表征。
+- 输入结果：
+  - 主输入：`outputs/experiments/v1_2_15_random_split_policy_formal_remote_summary` 中的 5-seed ensemble prediction rows。
+  - 本轮不使用 `v1_2_21_random_split_ablation_remote` 作为 full baseline；该目录是随机划分 targeted 消融矩阵，适合后续模块贡献分析。
+  - 数据库：`outputs/derived/modeling_dataset_v2_0_0_rebuild.sqlite`。
+- 新增脚本：`scripts/build_random_mainline_cst_ad.py`。
+  - 直接重建 random 8:2 与 random 5-fold 的参考训练空间：aquatic source train + soil target finetune pool，排除对应 test fold。
+  - Chemical AD：Morgan fingerprint 最大 Tanimoto 相似度 + Williams leverage，默认阈值 `0.5`，强覆盖阈值 `0.7`。
+  - Species AD：taxonomy prefix similarity、species/genus/family/order 覆盖、species-task-family 覆盖。
+  - Task AD：chemical/species/task head/task family 组合覆盖计数。
+  - 明确禁用 ensemble-SD uncertainty tier；输出中不使用 `y_pred_member_*` 或 seed 间标准差做分层。
+- 输出目录：
+  - 表格：`outputs/experiments/v1_2_23_random_mainline_cst_ad`
+  - 图：`outputs/figures/v1_2_23_random_mainline_cst_ad`
+- 关键结果：
+  - random 8:2 C+S+T：AD-A n=3164，coverage=96.49%，MAE=0.5896；AD-B n=114，MAE=0.6400；AD-C n=1，MAE=1.6373。
+  - random 5-fold C+S+T：AD-A n=15648，coverage=96.26%，MAE=0.5904；AD-B n=585，MAE=0.6832；AD-C n=23，MAE=0.5220。
+  - 高错误识别能力较弱：C+S+T 的 AUROC 约 0.50，说明随机插值划分下 CST-AD 主要是覆盖性/可靠性分层工具，不是强误差分类器。
+  - learned species embedding 最近邻距离可作为补充几何诊断：S0/S1 距离接近 0，S2/S3/S4 距离升高；但与 abs_error 的秩相关约 0.018，不应单独作为误差预测指标。
+- 决策：
+  - 本轮主线依据改为随机 8:2 与随机 5-fold。
+  - CAS 号 chemical holdout 不再作为本轮敏感性/压力测试依据，因为 CAS 分组隔离不等价于结构骨架外推。
+  - 后续若要评估新化合物外推，应另做 scaffold/cluster/Tanimoto-distance split，而不是沿用 CAS holdout 作为科学外推依据。
+- 本地验证：
+  - `E:\TOOLS\anaconda\python.exe -m py_compile scripts\build_random_mainline_cst_ad.py`
+  - `E:\TOOLS\anaconda\python.exe -m pytest tests\test_build_random_mainline_cst_ad.py -q`
+  - 结果：4 passed；本机仍出现 PyTorch/NumPy DLL 初始化 warning，但不影响本次脚本完成。
+
+## 2026-07-02 v1.2.21 随机划分 targeted 消融完成
+
+- v1.2.21 随机划分 targeted 消融已完成：60/60 run，exit_code 全部为 0。
+- 运行时间：远端 run_times 累计 33.56 h，平均 33.56 min/run，最短 22.75 min，最长 38.92 min；launcher 于 2026-07-02 02:34 (+08:00) 完成 summarize。
+- 输出目录：
+  - run root：`outputs/experiments/v1_2_21_random_split_ablation_remote`
+  - summary root：`outputs/experiments/v1_2_21_random_split_ablation_remote_summary`
+  - run_times：`outputs/logs/run_v1_2_21_random_split_ablation_times.csv`
+- 随机 8:2 与 5-fold 的消融排序高度一致：
+  - `no_context` 损失最大：random 8:2 MAE 0.8650，random 5-fold MAE 0.8555。
+  - `no_species_lifestage` 损失第二：random 8:2 MAE 0.7154，random 5-fold MAE 0.7168。
+  - `no_toxicity_binning` 有中等损失：random 8:2 MAE 0.6557，random 5-fold MAE 0.6699。
+  - `no_source_weighting` 与 `no_censored_loss` 在随机插值划分下接近 full 单模型基线。
+  - `no_molecular_residual` 在随机划分下没有表现出必要性，MAE 反而略低于 v1.2.15 full 单模型汇总；该现象应解释为随机插值场景下的冗余/正则化差异，不应直接替代 fixed chemical-holdout 的外推结论。
+- 新增结果摘要：`docs/v1_2_21_random_split_ablation_summary.md`。
+- 注意：v1.2.22 no-metal/inorganic 随机划分敏感性实验已在 v1.2.21 结束后自动启动，当前远端 GPU 进程显示其正在运行。
+
+## 2026-07-01 v1.2.22 去除无机/含金属后随机划分重跑准备
+
+- 目标：不覆盖旧库和旧输出，另建 no-metal/inorganic 派生 SQLite，并用当前最优随机划分策略重跑随机 8:2 与随机 5-fold。
+- 背景：
+  - 当前 `aggregated_task_records_aquatic_soil_ptox_qc` 中 metal/metalloid 记录为 64,057/297,455 行，占 21.54%；对应 325/6,815 个 CAS，占 4.77%。
+  - 这些记录行数占比较高，且 RDKit 描述符/Morgan fingerprint 对金属、无机物和盐类表征存在适用性风险，因此需要单独做去除后敏感性实验。
+- 新增过滤建库脚本：`scripts/build_no_metal_inorganic_dataset.py`。
+  - 输入旧库：`outputs/derived/modeling_dataset_v2_0_0_rebuild.sqlite`。
+  - 输出新库：`outputs/derived/modeling_dataset_v2_0_0_rebuild_no_metal_inorganic.sqlite`。
+  - 过滤规则：若某个 CAS/DTXSID 在 `target_records` 中被标记为 `chemical_class_l1=inorganic` 或 `chemical_class_l2=metal_metalloid`，则从新库的 `target_records`、`aggregated_task_records_aquatic_soil_ptox_qc`、`aggregated_task_records_aquatic_ptox_qc`、`aggregated_task_records_soil_ptox_qc` 对应副本中排除。
+  - 原始 SQLite 不删行、不改表；新表统一使用 `_no_metal_inorganic` 后缀，便于与旧结果对照。
+- 新增远端 launcher：`scripts/run_v1_2_22_no_metal_random_split_remote.sh`。
+  - 默认使用当前最优策略：`tanimoto_to_finetune alpha=1.0`、authority CE bin loss weight `0.025`、censored loss weight `0.01`、`finetune_validation_fraction=0.2`。
+  - 默认 5-seed：`42 1042 2042 3042 4042`。
+  - 随机 8:2：5 个 seed。
+  - 随机 5-fold：5 folds × 5 seeds。
+  - 输出根：`outputs/experiments/v1_2_22_no_metal_random_split_remote`。
+  - 汇总根：`outputs/experiments/v1_2_22_no_metal_random_split_remote_summary`。
+- 本地验证：
+  - `E:\TOOLS\anaconda\python.exe -m py_compile scripts\build_no_metal_inorganic_dataset.py scripts\build_aquatic_soil_adaptation_split.py`
+  - `E:\TOOLS\anaconda\python.exe -m pytest tests\test_build_no_metal_inorganic_dataset.py tests\test_aquatic_soil_adaptation_split.py tests\test_splits.py -q`
+  - 结果：15 passed，1 skipped。
+- 本机 `bash -n` 因 WSL/Bash 启动权限失败，需同步后在远端执行 `bash -n scripts/run_v1_2_22_no_metal_random_split_remote.sh`。
+- 远端准备状态：
+  - 已同步代码到 `/home/easyai/DL1/ecotox_qsar_transfer`。
+  - 远端 `bash -n scripts/run_v1_2_22_no_metal_random_split_remote.sh` 通过。
+  - 已执行 `bash scripts/run_v1_2_22_no_metal_random_split_remote.sh splits`，完成过滤库和 split 构建。
+  - 新过滤库：`outputs/derived/modeling_dataset_v2_0_0_rebuild_no_metal_inorganic.sqlite`。
+  - 过滤库规模：
+    - `target_records`：1,023,043 / 1,234,077 行，排除 211,034 行。
+    - `aggregated_task_records_aquatic_soil_ptox_qc_no_metal_inorganic`：233,398 / 297,455 行，排除 64,057 行。
+    - `aggregated_task_records_aquatic_ptox_qc_no_metal_inorganic`：219,849 / 281,435 行，排除 61,586 行。
+    - `aggregated_task_records_soil_ptox_qc_no_metal_inorganic`：13,549 / 16,020 行，排除 2,471 行。
+  - no-metal random 8:2 soil split：train 10,839，test 2,710；transfer split：aquatic train 219,849，soil finetune 10,839，soil test 2,710。
+  - no-metal random 5-fold soil split：每折 train 10,839-10,840，test 2,709-2,710；transfer split 使用同一 aquatic train 219,849。
+  - 2026-07-01 16:00 (+08:00) 已提交等待队列，等待当前 v1.2.21 launcher PID `3939959` 退出后自动启动完整 `ensemble_all`。
+  - 等待日志：`outputs/logs/run_v1_2_22_no_metal_random_split_wait_20260701_160001.log`；等待 PID：`4089408`。
 
 ## 2026-06-30 运行时间汇总与 v1.2.21 随机划分消融启动
 
