@@ -252,7 +252,7 @@ def _molecular_weight(row: Mapping[str, Any], *, descriptor_mol_weight: float | 
     if value is not None and value > 0:
         return value
     smiles = str(row.get("smiles", "") or "").strip()
-    if not smiles:
+    if smiles.casefold() in {"", "nan", "none", "null", "na", "n/a", "<na>"}:
         return None
     try:
         from rdkit import Chem

@@ -108,6 +108,7 @@ def collate_aggregated_task_batch(batch: Sequence[Mapping[str, Any]]) -> dict[st
     return {
         "molecular_numeric": molecular_numeric,
         "fingerprint": fingerprint,
+        "molecular_graph": _collate_molecular_graphs(batch),
         "categorical_ids": categorical_ids,
         "adapter_id": adapter_id,
         "task_head": task_head,
@@ -118,6 +119,84 @@ def collate_aggregated_task_batch(batch: Sequence[Mapping[str, Any]]) -> dict[st
         "split_part": [str(sample.get("split_part", "")) for sample in batch],
         "medium_domain": [str(sample.get("medium_domain", "")) for sample in batch],
     }
+
+
+def _collate_molecular_graphs(batch: Sequence[Mapping[str, Any]]) -> dict[str, torch.Tensor] | None:
+    graphs = [sample.get("molecular_graph") for sample in batch]
+    if not any(graphs):
+        return None
+
+    atom_dim, edge_dim = _graph_feature_dims(graphs)
+    atom_rows: list[list[float]] = []
+    edge_rows: list[list[float]] = []
+    edge_pairs: list[tuple[int, int]] = []
+    graph_batch: list[int] = []
+    atom_offset = 0
+    for graph_idx, graph in enumerate(graphs):
+        if not isinstance(graph, Mapping):
+            atom_features = [[0.0] * atom_dim]
+            edge_index = []
+            edge_features = []
+        else:
+            atom_features = _coerce_graph_matrix(graph.get("atom_features"), width=atom_dim)
+            edge_index = graph.get("edge_index") or []
+            edge_features = _coerce_graph_matrix(graph.get("edge_features"), width=edge_dim)
+            if not atom_features:
+                atom_features = [[0.0] * atom_dim]
+                edge_index = []
+                edge_features = []
+        for atom in atom_features:
+            atom_rows.append(atom)
+            graph_batch.append(graph_idx)
+        for pair, features in zip(edge_index, edge_features):
+            if not isinstance(pair, Sequence) or len(pair) < 2:
+                continue
+            edge_pairs.append((int(pair[0]) + atom_offset, int(pair[1]) + atom_offset))
+            edge_rows.append(features)
+        atom_offset += len(atom_features)
+
+    if edge_pairs:
+        edge_index_tensor = torch.tensor(edge_pairs, dtype=torch.long).t().contiguous()
+        edge_feature_tensor = torch.tensor(edge_rows, dtype=torch.float32)
+    else:
+        edge_index_tensor = torch.empty((2, 0), dtype=torch.long)
+        edge_feature_tensor = torch.empty((0, edge_dim), dtype=torch.float32)
+    return {
+        "atom_features": torch.tensor(atom_rows, dtype=torch.float32),
+        "edge_index": edge_index_tensor,
+        "edge_features": edge_feature_tensor,
+        "graph_batch": torch.tensor(graph_batch, dtype=torch.long),
+        "batch_size": torch.tensor(len(batch), dtype=torch.long),
+    }
+
+
+def _graph_feature_dims(graphs: Sequence[Any]) -> tuple[int, int]:
+    atom_dim = 5
+    edge_dim = 6
+    for graph in graphs:
+        if not isinstance(graph, Mapping):
+            continue
+        atom_features = graph.get("atom_features") or []
+        if atom_features:
+            atom_dim = len(atom_features[0])
+        edge_features = graph.get("edge_features") or []
+        if edge_features:
+            edge_dim = len(edge_features[0])
+        if atom_features and edge_features:
+            break
+    return int(atom_dim), int(edge_dim)
+
+
+def _coerce_graph_matrix(value: Any, *, width: int) -> list[list[float]]:
+    if not value:
+        return []
+    rows: list[list[float]] = []
+    for row in value:
+        values = [float(item) for item in list(row)[:width]]
+        if len(values) < width:
+            values.extend([0.0] * (width - len(values)))
+        rows.append(values)
+    return rows
 
 
 def train_model(
@@ -158,6 +237,15 @@ def train_model(
     return TrainingHistory(epochs=tuple(metrics))
 
 
+def graph_to_device(graph: Any, device: torch.device) -> Any:
+    if graph is None:
+        return None
+    return {
+        key: value.to(device) if torch.is_tensor(value) else value
+        for key, value in graph.items()
+    }
+
+
 def train_one_epoch(
     *,
     model: nn.Module,
@@ -179,6 +267,7 @@ def train_one_epoch(
     for batch in dataloader:
         molecular_numeric = batch["molecular_numeric"].to(target_device)
         fingerprint = batch["fingerprint"].to(target_device)
+        molecular_graph = graph_to_device(batch.get("molecular_graph"), target_device)
         categorical_ids = {
             field_name: ids.to(target_device)
             for field_name, ids in batch["categorical_ids"].items()
@@ -193,11 +282,14 @@ def train_one_epoch(
         censored_direction_id = censored_direction_id.to(target_device) if censored_direction_id is not None else None
 
         optimizer.zero_grad()
+        model_kwargs = {"adapter_ids": adapter_ids}
+        if molecular_graph is not None:
+            model_kwargs["molecular_graph"] = molecular_graph
         outputs = model(
             molecular_numeric=molecular_numeric,
             fingerprint=fingerprint,
             categorical_ids=categorical_ids,
-            adapter_ids=adapter_ids,
+            **model_kwargs,
         )
         loss = masked_multitask_huber_loss(
             outputs=outputs,

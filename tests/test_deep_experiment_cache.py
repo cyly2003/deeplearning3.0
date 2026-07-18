@@ -12,9 +12,14 @@ import torch
 
 from qsar_tl.modeling.dataset import AggregatedTaskDataset
 from qsar_tl.modeling.network import DeepModelConfig, EcotoxMultiTaskNetwork
+from qsar_tl.features.descriptor_groups import resolve_descriptor_group_indices
+from qsar_tl.features.molecular_graph import write_molecular_graph_cache
+from qsar_tl.features.padel import write_padel_feature_cache_from_csv
 from qsar_tl.training.deep_experiment import (
     ABLATION_SPECS,
     EffectLevelWeightingConfig,
+    MOLECULAR_SIZE_RELATED_DESCRIPTOR_NAMES,
+    RAW_NUMERIC_CLIP_ABS,
     MolecularFeatureBuilder,
     SourceWeightingConfig,
     active_categorical_columns,
@@ -29,6 +34,8 @@ from qsar_tl.training.deep_experiment import (
     build_numeric_feature_names,
     build_preprocessing_manifest,
     coral_loss,
+    descriptor_mask_indices,
+    descriptor_proxy_indices,
     encode_category_id,
     fit_categorical_maps,
     fit_adapter_map,
@@ -36,11 +43,14 @@ from qsar_tl.training.deep_experiment import (
     fit_target_scaler,
     fit_zscore_correction,
     load_molecular_feature_cache,
+    load_molecular_feature_cache_descriptor_names,
     max_tanimoto_similarity,
+    masked_descriptors,
     metrics_by_group,
     min_proxy_distance,
     normalize_clipped_weights,
     predict_all,
+    raw_numeric_matrix,
     split_finetune_validation_indices,
     split_training_validation_indices,
     ZScoreCorrectionConfig,
@@ -78,6 +88,89 @@ def test_molecular_feature_builder_prefers_cache(tmp_path: Path) -> None:
 
     assert builder.source == "rdkit_cache"
     assert builder.encode("CCO") == ([3.0, 4.0], [0.0, 1.0, 0.0, 1.0])
+
+
+def test_molecular_feature_builder_reads_descriptor_names_from_cache(tmp_path: Path) -> None:
+    cache_path = tmp_path / "padel_features.jsonl"
+    payload = {
+        "smiles": "CCO",
+        "feature_source": "padel_descriptor_morgan",
+        "descriptor_names": ["MW", "TopoPSA", "ALogP"],
+        "descriptors": [46.0, 20.2, -0.1],
+        "fingerprint": [1.0, 0.0, 1.0, 0.0],
+    }
+    cache_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    builder = MolecularFeatureBuilder(fingerprint_size=4, cache_path=cache_path)
+
+    assert builder.source == "padel_descriptor_morgan"
+    assert load_molecular_feature_cache_descriptor_names(cache_path, fingerprint_size=4) == ("MW", "TopoPSA", "ALogP")
+    assert builder.descriptor_names(3) == ("MW", "TopoPSA", "ALogP")
+
+
+def test_molecular_feature_builder_cache_miss_keeps_cache_descriptor_width(tmp_path: Path) -> None:
+    cache_path = tmp_path / "padel_features.jsonl"
+    payload = {
+        "smiles": "CCO",
+        "feature_source": "padel_descriptor_morgan",
+        "descriptor_names": ["MW", "TopoPSA", "ALogP"],
+        "descriptors": [46.0, 20.2, -0.1],
+        "fingerprint": [1.0, 0.0, 1.0, 0.0],
+    }
+    cache_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    builder = MolecularFeatureBuilder(fingerprint_size=4, cache_path=cache_path)
+    descriptors, fingerprint = builder.encode("")
+
+    assert descriptors == [0.0, 0.0, 0.0]
+    assert len(fingerprint) == 4
+
+
+def test_molecular_feature_builder_pads_cached_descriptors_to_cache_schema(tmp_path: Path) -> None:
+    cache_path = tmp_path / "padel_features.jsonl"
+    payloads = [
+        {
+            "smiles": "CCO",
+            "feature_source": "padel_descriptor_morgan",
+            "descriptor_names": ["MW", "TopoPSA", "ALogP"],
+            "descriptors": [46.0, 20.2, -0.1],
+            "fingerprint": [1.0, 0.0, 1.0, 0.0],
+        },
+        {
+            "smiles": "CCC",
+            "feature_source": "padel_descriptor_morgan",
+            "descriptor_names": ["MW", "TopoPSA", "ALogP"],
+            "descriptors": [44.0],
+            "fingerprint": [0.0, 1.0, 0.0, 1.0],
+        },
+    ]
+    cache_path.write_text("\n".join(json.dumps(payload) for payload in payloads) + "\n", encoding="utf-8")
+
+    builder = MolecularFeatureBuilder(fingerprint_size=4, cache_path=cache_path)
+
+    assert builder.encode("CCC") == ([44.0, 0.0, 0.0], [0.0, 1.0, 0.0, 1.0])
+
+
+def test_numeric_matrix_clips_extreme_cache_descriptors(tmp_path: Path) -> None:
+    cache_path = tmp_path / "padel_features.jsonl"
+    payload = {
+        "smiles": "CCO",
+        "feature_source": "padel_descriptor_morgan",
+        "descriptor_names": ["HugePositive", "HugeNegative"],
+        "descriptors": [1.0e308, -1.0e308],
+        "fingerprint": [1.0, 0.0, 1.0, 0.0],
+    }
+    cache_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    frame = _tiny_frame()
+    frame["smiles"] = "CCO"
+    builder = MolecularFeatureBuilder(fingerprint_size=4, cache_path=cache_path)
+
+    matrix = raw_numeric_matrix(frame, builder, descriptor_names=builder.descriptor_names())
+    stats = fit_numeric_stats(frame, builder, descriptor_names=builder.descriptor_names())
+
+    assert np.isfinite(matrix).all()
+    assert np.max(np.abs(matrix[:, :2])) <= RAW_NUMERIC_CLIP_ABS
+    assert all(np.isfinite([mean, std]).all() for mean, std in stats.values())
 
 
 def test_molecular_feature_builder_treats_nan_smiles_as_missing() -> None:
@@ -133,6 +226,65 @@ def test_no_fingerprint_ablation_masks_fingerprint(tmp_path: Path) -> None:
     )
 
     assert samples[0]["fingerprint"] == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_no_molecular_size_descriptors_masks_weight_related_group() -> None:
+    spec = ABLATION_SPECS["no_molecular_size_descriptors"]
+
+    masked = masked_descriptors([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], spec)
+
+    assert masked == [0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    assert spec.masked_descriptor_names == MOLECULAR_SIZE_RELATED_DESCRIPTOR_NAMES
+
+
+def test_descriptor_mask_uses_supplied_descriptor_names() -> None:
+    spec = ABLATION_SPECS["no_molecular_size_descriptors"]
+
+    masked = masked_descriptors(
+        [1.0, 2.0, 3.0],
+        spec,
+        descriptor_names=("Unrelated", "MolWt", "TPSA"),
+    )
+
+    assert masked == [1.0, 0.0, 0.0]
+    assert descriptor_mask_indices(3, spec, descriptor_names=("Unrelated", "MolWt", "TPSA")) == (1, 2)
+
+
+def test_preprocessing_manifest_records_molecular_size_descriptor_mask() -> None:
+    spec = ABLATION_SPECS["no_molecular_size_descriptors"]
+    manifest = build_preprocessing_manifest(
+        categorical_maps={},
+        adapter_map={},
+        numeric_stats={str(idx): (0.0, 1.0) for idx in range(8)},
+        ablation=spec,
+        fingerprint_size=4,
+        encoder_source="rdkit_cache",
+        cache_path=None,
+        descriptor_count=8,
+    )
+
+    assert manifest["masked_descriptor_names"] == list(MOLECULAR_SIZE_RELATED_DESCRIPTOR_NAMES)
+    assert manifest["masked_descriptor_indices"] == [0, 1, 3, 4, 5, 6, 7]
+
+
+def test_preprocessing_manifest_uses_cache_descriptor_names() -> None:
+    spec = ABLATION_SPECS["full"]
+    manifest = build_preprocessing_manifest(
+        categorical_maps={},
+        adapter_map={},
+        numeric_stats={str(idx): (0.0, 1.0) for idx in range(3)},
+        ablation=spec,
+        fingerprint_size=4,
+        encoder_source="padel_descriptor_morgan",
+        cache_path="features.jsonl",
+        descriptor_count=3,
+        descriptor_names=("MW", "TopoPSA", "ALogP"),
+        descriptor_encoder={"mode": "dense_head", "head_dim": 8},
+    )
+
+    assert manifest["molecular_descriptor_names"] == ("MW", "TopoPSA", "ALogP")
+    assert manifest["numeric_feature_names"][:3] == ("MW", "TopoPSA", "ALogP")
+    assert manifest["descriptor_encoder"]["mode"] == "dense_head"
 
 
 def test_no_context_ablation_removes_categorical_context(tmp_path: Path) -> None:
@@ -247,6 +399,53 @@ def test_no_molecular_residual_ablation_disables_residual_layer() -> None:
     )
 
     assert model.molecular_residual is None
+
+
+def test_descriptor_dense_head_forward_shape() -> None:
+    model = EcotoxMultiTaskNetwork(
+        DeepModelConfig(
+            numeric_dim=5,
+            fingerprint_dim=4,
+            descriptor_count=3,
+            descriptor_encoder_mode="dense_head",
+            descriptor_head_dim=6,
+            categorical_cardinalities={},
+            task_heads=("ECx_Mortality",),
+            hidden_dims=(8,),
+        )
+    )
+
+    outputs = model(
+        torch.zeros((2, 5), dtype=torch.float32),
+        torch.zeros((2, 4), dtype=torch.float32),
+        {},
+    )
+
+    assert outputs["ECx_Mortality"].shape == (2,)
+
+
+def test_descriptor_prior_clustered_head_forward_shape() -> None:
+    model = EcotoxMultiTaskNetwork(
+        DeepModelConfig(
+            numeric_dim=5,
+            fingerprint_dim=4,
+            descriptor_count=3,
+            descriptor_encoder_mode="prior_clustered_heads",
+            descriptor_group_head_dim=4,
+            descriptor_group_indices={"size": (0, 1), "partition": (2,)},
+            categorical_cardinalities={},
+            task_heads=("ECx_Mortality",),
+            hidden_dims=(8,),
+        )
+    )
+
+    outputs = model(
+        torch.zeros((2, 5), dtype=torch.float32),
+        torch.zeros((2, 4), dtype=torch.float32),
+        {},
+    )
+
+    assert outputs["ECx_Mortality"].shape == (2,)
 
 
 def test_apply_finetune_freeze_heads_embeddings() -> None:
@@ -867,6 +1066,55 @@ def test_coral_loss_is_zero_for_identical_representations() -> None:
     shared = torch.tensor([[1.0, 2.0], [3.0, 5.0], [4.0, 8.0]])
 
     assert float(coral_loss(shared, shared).detach()) < 1e-8
+
+
+def test_padel_csv_cache_writer_outputs_compatible_jsonl(tmp_path: Path) -> None:
+    csv_path = tmp_path / "padel.csv"
+    csv_path.write_text(
+        "smiles,MW,TopoPSA,ALogP\nCCO,46.07,20.2,-0.1\n",
+        encoding="utf-8",
+    )
+    out_path = tmp_path / "padel_features.jsonl"
+
+    result = write_padel_feature_cache_from_csv(
+        csv_path,
+        out_path,
+        smiles_column="smiles",
+        fingerprint_size=8,
+    )
+
+    payload = json.loads(out_path.read_text(encoding="utf-8").splitlines()[0])
+    assert result.rows_written == 1
+    assert payload["feature_source"] == "padel_descriptor_morgan"
+    assert payload["descriptor_names"] == ["MW", "TopoPSA", "ALogP"]
+    assert len(payload["fingerprint"]) == 8
+    assert result.manifest_path.exists()
+
+
+def test_descriptor_group_rules_resolve_to_indices() -> None:
+    groups = {
+        "size": {"names": ["MW"], "prefixes": ["nAtom"]},
+        "partition": {"contains": ["logp"]},
+    }
+
+    resolved = resolve_descriptor_group_indices(groups, ("MW", "nAtomP", "ALogP", "TopoPSA"))
+
+    assert resolved["size"] == (0, 1)
+    assert resolved["partition"] == (2,)
+
+
+def test_molecular_graph_cache_writes_deep_graph_encoder_interface(tmp_path: Path) -> None:
+    pytest.importorskip("rdkit")
+    out_path = tmp_path / "graphs.jsonl"
+
+    manifest = write_molecular_graph_cache(["CCO", "CCO"], out_path)
+
+    assert manifest["training_integration"] == "deep_graph_encoder"
+    assert manifest["written"] == 1
+    payload = json.loads(out_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["smiles"] == "CCO"
+    assert payload["atom_features"]
+    assert "edge_index" in payload
 
 
 def test_build_run_dir_uses_version_and_chinese_name() -> None:

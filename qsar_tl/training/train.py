@@ -22,6 +22,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=None, help="Override optimizer weight decay")
     parser.add_argument("--scheduler", default=None, choices=["none", "cosine", "reduce_on_plateau"])
     parser.add_argument("--dropout", type=float, default=None, help="Override model dropout")
+    parser.add_argument("--medium-adapters", dest="medium_adapters", action="store_true", default=None)
+    parser.add_argument("--no-medium-adapters", dest="medium_adapters", action="store_false")
     parser.add_argument(
         "--target-standardization",
         default=None,
@@ -53,6 +55,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--finetune-scheduler", default=None, choices=["none", "cosine", "reduce_on_plateau"])
     parser.add_argument("--finetune-freeze", default=None, choices=["none", "heads_only", "heads_embeddings"])
     parser.add_argument("--finetune-validation-fraction", type=float, default=None)
+    parser.add_argument("--finetune-mgkg-epochs", type=int, default=None)
+    parser.add_argument("--finetune-mgkg-learning-rate", type=float, default=None)
+    parser.add_argument("--finetune-mgkg-batch-size", type=int, default=None)
+    parser.add_argument("--finetune-mgkg-scheduler", default=None, choices=["none", "cosine", "reduce_on_plateau"])
+    parser.add_argument("--finetune-mgkg-freeze", default=None, choices=["none", "heads_only", "heads_embeddings"])
+    parser.add_argument("--finetune-mgkg-validation-fraction", type=float, default=None)
+    parser.add_argument("--head-routing", default=None, choices=["task", "task_target"])
+    parser.add_argument(
+        "--allow-mixed-target-dimensions",
+        dest="allow_mixed_target_dimensions",
+        action="store_true",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-allow-mixed-target-dimensions",
+        dest="allow_mixed_target_dimensions",
+        action="store_false",
+    )
     parser.add_argument("--augment-train-replicates", type=int, default=None)
     parser.add_argument("--augment-finetune-replicates", type=int, default=None)
     parser.add_argument("--augment-numeric-noise-std", type=float, default=None)
@@ -99,6 +119,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     config = load_config(args.config)
+    if args.medium_adapters is not None:
+        config = dict(config)
+        model_cfg = dict(config.get("model", {}))
+        model_cfg["use_medium_adapters"] = bool(args.medium_adapters)
+        config["model"] = model_cfg
     output_dir = Path(args.out_dir or config.get("paths", {}).get("output_dir", "outputs/experiments/default"))
     split_name = args.split_name or config.get("experiment", {}).get("deep_training", {}).get("split_name", "B_random_8_2")
     db_path = args.db or config.get("data", {}).get("modeling_tables_db")
@@ -143,6 +168,14 @@ def main() -> None:
         finetune_scheduler=args.finetune_scheduler,
         finetune_freeze=args.finetune_freeze,
         finetune_validation_fraction=args.finetune_validation_fraction,
+        finetune_mgkg_epochs=args.finetune_mgkg_epochs,
+        finetune_mgkg_learning_rate=args.finetune_mgkg_learning_rate,
+        finetune_mgkg_batch_size=args.finetune_mgkg_batch_size,
+        finetune_mgkg_scheduler=args.finetune_mgkg_scheduler,
+        finetune_mgkg_freeze=args.finetune_mgkg_freeze,
+        finetune_mgkg_validation_fraction=args.finetune_mgkg_validation_fraction,
+        head_routing=args.head_routing,
+        allow_mixed_target_dimensions=args.allow_mixed_target_dimensions,
         augment_train_replicates=args.augment_train_replicates,
         augment_finetune_replicates=args.augment_finetune_replicates,
         augment_numeric_noise_std=args.augment_numeric_noise_std,

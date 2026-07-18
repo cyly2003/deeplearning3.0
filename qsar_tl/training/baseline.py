@@ -26,7 +26,7 @@ MODEL_NAMES = (
     "mlp",
     "hist_gradient_boosting",
 )
-EVAL_SPLIT_PARTS = ("train", "finetune", "valid", "test")
+EVAL_SPLIT_PARTS = ("train", "finetune", "finetune_mgkg", "valid", "test")
 DURATION_COLUMN_CANDIDATES = (
     "duration_bin_h",
     "exposure_duration_mean_h",
@@ -387,6 +387,7 @@ def load_split_frame(
     split_name: str,
     source_table: str | None = None,
     limit: int | None = None,
+    allow_mixed_target_dimensions: bool = False,
 ) -> pd.DataFrame:
     with closing(sqlite3.connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -456,7 +457,8 @@ def load_split_frame(
         raise ValueError(f"No rows found for split_name={split_name!r}.")
     if "target_status" in frame.columns:
         frame = frame[(frame["target_status"].isna()) | (frame["target_status"] == "included")]
-    validate_single_target_dimension(frame, split_name=split_name, source_table=resolved_source)
+    if not allow_mixed_target_dimensions:
+        validate_single_target_dimension(frame, split_name=split_name, source_table=resolved_source)
     return frame
 
 

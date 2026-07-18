@@ -27,6 +27,7 @@ from qsar_tl.training.deep_train import (
     DeepTrainingConfig,
     build_optimizer,
     collate_aggregated_task_batch,
+    graph_to_device,
     set_torch_seed,
 )
 from qsar_tl.training.ordinal_binning import ordinal_softmax_loss
@@ -43,6 +44,15 @@ MOLECULAR_DESCRIPTOR_NAMES = (
     "MolWt",
     "TPSA",
     "MolLogP",
+    "HeavyAtomCount",
+    "NumHAcceptors",
+    "NumHDonors",
+    "RingCount",
+    "RotatableBonds",
+)
+MOLECULAR_SIZE_RELATED_DESCRIPTOR_NAMES = (
+    "MolWt",
+    "TPSA",
     "HeavyAtomCount",
     "NumHAcceptors",
     "NumHDonors",
@@ -68,6 +78,7 @@ DURATION_NUMERIC_COLUMNS = (
     "duration_rbf_720h",
 )
 CONTEXT_NUMERIC_COLUMNS = EFFECT_LEVEL_NUMERIC_COLUMNS + DURATION_NUMERIC_COLUMNS
+RAW_NUMERIC_CLIP_ABS = 1.0e12
 CATEGORICAL_COLUMNS = (
     "latin_name",
     "kingdom",
@@ -99,6 +110,8 @@ PREDICTION_METADATA_COLUMNS = (
     "split_name",
     "split_part",
     "task_head",
+    "base_task_head",
+    "model_head",
     "task_group",
     "task_family",
     "effect_level_x",
@@ -154,6 +167,26 @@ PREDICTION_METADATA_COLUMNS = (
 )
 
 
+def bounded_numeric_value(value: Any, *, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(number):
+        return float(default)
+    return max(-RAW_NUMERIC_CLIP_ABS, min(RAW_NUMERIC_CLIP_ABS, number))
+
+
+def bounded_numeric_matrix(matrix: np.ndarray) -> np.ndarray:
+    bounded = np.nan_to_num(
+        matrix.astype(float, copy=False),
+        nan=0.0,
+        posinf=RAW_NUMERIC_CLIP_ABS,
+        neginf=-RAW_NUMERIC_CLIP_ABS,
+    )
+    return np.clip(bounded, -RAW_NUMERIC_CLIP_ABS, RAW_NUMERIC_CLIP_ABS)
+
+
 @dataclass(frozen=True)
 class DeepExperimentResult:
     out_dir: Path
@@ -176,12 +209,14 @@ class AblationSpec:
     name: str
     use_descriptors: bool = True
     use_fingerprint: bool = True
+    use_molecular_graph: bool = False
     use_context_numeric: bool = True
     use_duration_features: bool = True
     use_species_lifestage: bool = True
     use_other_categorical_context: bool = True
     use_molecular_residual: bool = True
     use_medium_adapter: bool = True
+    masked_descriptor_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -419,6 +454,20 @@ ABLATION_SPECS: dict[str, AblationSpec] = {
     "full": AblationSpec("full"),
     "no_fingerprint": AblationSpec("no_fingerprint", use_fingerprint=False),
     "no_descriptors": AblationSpec("no_descriptors", use_descriptors=False),
+    # Preserve all experimental context while retaining only the named molecular view.
+    # The older `descriptors_only` preset intentionally removes context and remains
+    # unchanged for historical comparability.
+    "descriptors_with_context": AblationSpec("descriptors_with_context", use_fingerprint=False),
+    "fingerprint_with_context": AblationSpec("fingerprint_with_context", use_descriptors=False),
+    "no_molecular_input": AblationSpec(
+        "no_molecular_input",
+        use_descriptors=False,
+        use_fingerprint=False,
+    ),
+    "no_molecular_size_descriptors": AblationSpec(
+        "no_molecular_size_descriptors",
+        masked_descriptor_names=MOLECULAR_SIZE_RELATED_DESCRIPTOR_NAMES,
+    ),
     "descriptors_only": AblationSpec(
         "descriptors_only",
         use_fingerprint=False,
@@ -427,6 +476,12 @@ ABLATION_SPECS: dict[str, AblationSpec] = {
         use_species_lifestage=False,
         use_other_categorical_context=False,
         use_medium_adapter=False,
+    ),
+    "graph_only_molecule": AblationSpec(
+        "graph_only_molecule",
+        use_descriptors=False,
+        use_fingerprint=False,
+        use_molecular_graph=True,
     ),
     "no_species_lifestage": AblationSpec("no_species_lifestage", use_species_lifestage=False),
     "no_duration": AblationSpec("no_duration", use_duration_features=False),
@@ -487,6 +542,14 @@ def run_deep_experiment(
     finetune_scheduler: str | None = None,
     finetune_freeze: str | None = None,
     finetune_validation_fraction: float | None = None,
+    finetune_mgkg_epochs: int | None = None,
+    finetune_mgkg_learning_rate: float | None = None,
+    finetune_mgkg_batch_size: int | None = None,
+    finetune_mgkg_scheduler: str | None = None,
+    finetune_mgkg_freeze: str | None = None,
+    finetune_mgkg_validation_fraction: float | None = None,
+    head_routing: str | None = None,
+    allow_mixed_target_dimensions: bool | None = None,
     weight_decay: float | None = None,
     dropout: float | None = None,
     target_standardization: str | None = None,
@@ -524,13 +587,30 @@ def run_deep_experiment(
     if not bool(config.get("model", {}).get("use_medium_adapters", True)):
         ablation_spec = replace(ablation_spec, use_medium_adapter=False)
 
-    frame = load_split_frame(db_path, split_name=split_name, source_table=source_table, limit=limit)
+    train_cfg = config.get("training", {})
+    mixed_target_dimensions_allowed = bool(
+        allow_mixed_target_dimensions
+        if allow_mixed_target_dimensions is not None
+        else train_cfg.get("allow_mixed_target_dimensions", False)
+    )
+    frame = load_split_frame(
+        db_path,
+        split_name=split_name,
+        source_table=source_table,
+        limit=limit,
+        allow_mixed_target_dimensions=mixed_target_dimensions_allowed,
+    )
     split_join_audit = dict(frame.attrs.get("split_join_audit", {}))
     frame = add_duration_nonlinear_features(frame)
     target_column = "target_value_median" if "target_value_median" in frame.columns else "target_value"
     frame = frame[frame[target_column].notna()].copy()
     if frame.empty:
         raise ValueError("No target rows available for deep training.")
+
+    head_routing_mode = normalize_head_routing(
+        head_routing if head_routing is not None else train_cfg.get("head_routing", "task")
+    )
+    frame = apply_head_routing(frame, mode=head_routing_mode)
 
     filter_cfg = config.get("experiment", {}).get("task_filter", {})
     min_total = int(filter_cfg.get("min_total", 0))
@@ -540,8 +620,17 @@ def run_deep_experiment(
     kept_frames = []
     for task_head, task_frame in frame.groupby("task_head", dropna=False):
         task_label = "default" if task_head is None else str(task_head)
+        # A task introduced only in the third stage has no stage-1 `train`
+        # rows. For thresholding, its dedicated finetune set is its training
+        # population; the actual stage ordering remains unchanged below.
+        filter_frame = task_frame
+        if "finetune_mgkg" in set(task_frame.get("split_part", [])):
+            filter_frame = task_frame.copy()
+            filter_frame["split_part"] = filter_frame["split_part"].replace(
+                {"finetune_mgkg": "train"}
+            )
         reason = task_skip_reason(
-            task_frame,
+            filter_frame,
             min_total=min_total,
             min_train=min_train,
             min_eval=min_eval,
@@ -554,10 +643,14 @@ def run_deep_experiment(
         raise ValueError(f"No task heads passed sample thresholds. Skipped: {skipped_tasks}")
     frame = _concat_frames(kept_frames)
 
-    train_cfg = config.get("training", {})
     reporting_cfg = config.get("reporting", {}) if isinstance(config.get("reporting", {}), dict) else {}
     metric_min_group_n = max(1, int(metric_min_n if metric_min_n is not None else reporting_cfg.get("min_metric_group_n", 5)))
     finetune_cfg = train_cfg.get("finetune", {}) if isinstance(train_cfg.get("finetune", {}), dict) else {}
+    finetune_mgkg_cfg = (
+        train_cfg.get("finetune_mgkg", {})
+        if isinstance(train_cfg.get("finetune_mgkg", {}), dict)
+        else {}
+    )
     augmentation_cfg = _feature_noise_config(
         train_cfg,
         seed=seed,
@@ -614,12 +707,30 @@ def run_deep_experiment(
     finetune_freeze_mode = str(
         finetune_freeze if finetune_freeze is not None else finetune_cfg.get("freeze", "none")
     ).strip().lower()
+    requested_finetune_mgkg_epochs = int(
+        finetune_mgkg_epochs
+        if finetune_mgkg_epochs is not None
+        else finetune_mgkg_cfg.get("epochs", 0)
+    )
+    finetune_mgkg_requested = requested_finetune_mgkg_epochs > 0
+    finetune_mgkg_freeze_mode = str(
+        finetune_mgkg_freeze
+        if finetune_mgkg_freeze is not None
+        else finetune_mgkg_cfg.get("freeze", "none")
+    ).strip().lower()
 
     fingerprint_size = int(config.get("features", {}).get("molecule", {}).get("morgan_n_bits", 512))
     cache_path = _molecular_cache_path(config)
     encoder = MolecularFeatureBuilder(fingerprint_size=fingerprint_size, cache_path=cache_path)
+    graph_cache_path = _molecular_graph_cache_path(config)
+    graph_encoder = MolecularGraphFeatureBuilder(cache_path=graph_cache_path) if ablation_spec.use_molecular_graph else None
+    if ablation_spec.use_molecular_graph and (graph_encoder is None or not graph_encoder.cache):
+        raise ValueError("graph_only_molecule requires features.molecule.graph_cache with cached molecular graphs.")
+    graph_encoder_cfg = _graph_encoder_config(config)
     descriptor_count = _descriptor_count(frame, encoder, ablation_spec)
-    numeric_feature_names = build_numeric_feature_names(descriptor_count)
+    descriptor_names = encoder.descriptor_names(descriptor_count)
+    numeric_feature_names = build_numeric_feature_names(descriptor_count, descriptor_names=descriptor_names)
+    descriptor_encoder_cfg = _descriptor_encoder_config(config, descriptor_names)
 
     early_cfg = _early_stopping_config(
         config,
@@ -661,9 +772,29 @@ def run_deep_experiment(
         ),
         monitor_split=str(finetune_cfg.get("monitor_split", "auto")),
     )
+    finetune_mgkg_indices = [
+        idx
+        for idx, sample in enumerate(split_probe_samples)
+        if sample["split_part"] == "finetune_mgkg"
+    ]
+    finetune_mgkg_train_indices, finetune_mgkg_validation_indices, finetune_mgkg_validation_source = (
+        split_finetune_validation_indices(
+            split_probe_samples,
+            finetune_indices=finetune_mgkg_indices,
+            seed=seed + 20_000,
+            validation_fraction=float(
+                finetune_mgkg_validation_fraction
+                if finetune_mgkg_validation_fraction is not None
+                else finetune_mgkg_cfg.get("validation_fraction", 0.0)
+            ),
+            monitor_split=str(finetune_mgkg_cfg.get("monitor_split", "auto")),
+        )
+    )
     preprocessing_indices = list(actual_train_indices)
     if finetune_requested:
         preprocessing_indices.extend(finetune_train_indices)
+    if finetune_mgkg_requested:
+        preprocessing_indices.extend(finetune_mgkg_train_indices)
     preprocessing_frame = frame.iloc[sorted(set(preprocessing_indices))].copy()
     category_min_count = int(
         train_cfg.get(
@@ -677,7 +808,12 @@ def run_deep_experiment(
         min_count=category_min_count,
     )
     adapter_map = fit_adapter_map(preprocessing_frame, ablation=ablation_spec)
-    numeric_stats = fit_numeric_stats(preprocessing_frame, encoder, ablation=ablation_spec)
+    numeric_stats = fit_numeric_stats(
+        preprocessing_frame,
+        encoder,
+        descriptor_names=descriptor_names,
+        ablation=ablation_spec,
+    )
     zscore_cfg = _zscore_correction_config(
         train_cfg,
         enabled_override=feature_zscore_correction,
@@ -688,6 +824,7 @@ def run_deep_experiment(
         encoder,
         numeric_stats=numeric_stats,
         feature_names=numeric_feature_names,
+        descriptor_names=descriptor_names,
         config=zscore_cfg,
         ablation=ablation_spec,
     )
@@ -700,6 +837,7 @@ def run_deep_experiment(
     samples = build_deep_samples(
         frame,
         encoder=encoder,
+        descriptor_names=descriptor_names,
         categorical_maps=categorical_maps,
         adapter_map=adapter_map,
         numeric_stats=numeric_stats,
@@ -707,6 +845,7 @@ def run_deep_experiment(
         target_scaler=target_scaler,
         zscore_correction=zscore_correction,
         ablation=ablation_spec,
+        graph_encoder=graph_encoder,
         toxicity_binning_config=toxicity_binning_cfg,
         toxicity_bin_scheme=toxicity_bin_scheme,
     )
@@ -723,6 +862,11 @@ def run_deep_experiment(
         indices=finetune_validation_indices,
         split_part="finetune_validation",
     )
+    mark_internal_validation_samples(
+        samples,
+        indices=finetune_mgkg_validation_indices,
+        split_part="finetune_mgkg_validation",
+    )
     if censored_loss_cfg.active():
         censored_samples, censored_summary = build_censored_training_samples(
             db_path,
@@ -734,10 +878,13 @@ def run_deep_experiment(
             target_column=target_column,
             target_scaler=target_scaler,
             zscore_correction=zscore_correction,
+            descriptor_names=descriptor_names,
             ablation=ablation_spec,
+            graph_encoder=graph_encoder,
             config=censored_loss_cfg,
             kept_task_heads=tuple(sorted(set(str(sample.get("task_head")) for sample in samples))),
             split_parts=tuple(sorted({str(sample.get("split_part")) for sample in samples})),
+            head_routing_mode=head_routing_mode,
         )
         censored_start = len(samples)
         samples.extend(censored_samples)
@@ -750,11 +897,22 @@ def run_deep_experiment(
             elif split_part == "finetune":
                 finetune_indices.append(idx)
                 finetune_train_indices.append(idx)
-    source_weighting_summary = apply_source_similarity_weights(samples, source_weighting_cfg)
+            elif split_part == "finetune_mgkg":
+                finetune_mgkg_indices.append(idx)
+                finetune_mgkg_train_indices.append(idx)
+    source_weighting_summary = apply_source_similarity_weights(
+        samples,
+        source_weighting_cfg,
+        descriptor_names=descriptor_names,
+    )
     effect_level_weighting_summary = apply_effect_level_frequency_weights(
         samples,
         effect_level_weighting_cfg,
-        train_indices=actual_train_indices + finetune_train_indices,
+        train_indices=(
+            actual_train_indices
+            + finetune_train_indices
+            + finetune_mgkg_train_indices
+        ),
     )
     weighting_history_fields = sample_weighting_history_fields(
         source_weighting_summary,
@@ -784,6 +942,15 @@ def run_deep_experiment(
             categorical_cardinalities=categorical_cardinalities,
             adapter_count=max(adapter_map.values(), default=0) + 1 if adapter_map else 0,
             effect_level_numeric_indices=effect_level_feature_indices(numeric_feature_names),
+            descriptor_count=descriptor_count,
+            descriptor_encoder_mode=descriptor_encoder_cfg["mode"],
+            descriptor_head_dim=descriptor_encoder_cfg["head_dim"],
+            descriptor_group_head_dim=descriptor_encoder_cfg["group_head_dim"],
+            descriptor_group_indices=descriptor_encoder_cfg["group_indices"],
+            graph_atom_feature_dim=0 if graph_encoder is None else graph_encoder.atom_feature_dim,
+            graph_edge_feature_dim=0 if graph_encoder is None else graph_encoder.edge_feature_dim,
+            graph_embedding_dim=0 if graph_encoder is None else graph_encoder_cfg["embedding_dim"],
+            graph_message_steps=graph_encoder_cfg["message_steps"],
             task_heads=task_heads,
             hidden_dims=_hidden_dims(config),
             dropout=float(dropout if dropout is not None else config.get("model", {}).get("dropout", 0.15)),
@@ -833,6 +1000,37 @@ def run_deep_experiment(
         weight_decay=float(finetune_cfg.get("weight_decay", train_config.weight_decay)),
         gradient_clip_norm=_optional_float(finetune_cfg.get("gradient_clip_norm", train_config.gradient_clip_norm)),
         scheduler=str(finetune_scheduler if finetune_scheduler is not None else finetune_cfg.get("scheduler", train_config.scheduler)),
+        device=train_config.device,
+        seed=seed,
+        num_workers=train_config.num_workers,
+        toxicity_bin_loss_weight=train_config.toxicity_bin_loss_weight,
+        toxicity_binning_mode=train_config.toxicity_binning_mode,
+        censored_loss_weight=train_config.censored_loss_weight,
+        censored_loss_margin=train_config.censored_loss_margin,
+    )
+    finetune_mgkg_config = DeepTrainingConfig(
+        epochs=requested_finetune_mgkg_epochs,
+        batch_size=int(
+            finetune_mgkg_batch_size
+            or finetune_mgkg_cfg.get("batch_size", finetune_config.batch_size)
+        ),
+        learning_rate=float(
+            finetune_mgkg_learning_rate
+            if finetune_mgkg_learning_rate is not None
+            else finetune_mgkg_cfg.get("learning_rate", finetune_config.learning_rate * 0.5)
+        ),
+        huber_delta=train_config.huber_delta,
+        task_weights=train_config.task_weights,
+        optimizer=str(finetune_mgkg_cfg.get("optimizer", finetune_config.optimizer)),
+        weight_decay=float(finetune_mgkg_cfg.get("weight_decay", finetune_config.weight_decay)),
+        gradient_clip_norm=_optional_float(
+            finetune_mgkg_cfg.get("gradient_clip_norm", finetune_config.gradient_clip_norm)
+        ),
+        scheduler=str(
+            finetune_mgkg_scheduler
+            if finetune_mgkg_scheduler is not None
+            else finetune_mgkg_cfg.get("scheduler", finetune_config.scheduler)
+        ),
         device=train_config.device,
         seed=seed,
         num_workers=train_config.num_workers,
@@ -1127,6 +1325,145 @@ def run_deep_experiment(
         if finetune_best_state is not None:
             model.load_state_dict(finetune_best_state)
 
+    finetune_mgkg_ran = 0
+    finetune_mgkg_best_epoch = 0
+    finetune_mgkg_best_monitor_loss = float("inf")
+    finetune_mgkg_no_improve_epochs = 0
+    finetune_mgkg_early_enabled = bool(
+        finetune_mgkg_validation_indices
+        and bool(finetune_mgkg_cfg.get("early_stopping", True))
+    )
+    finetune_mgkg_patience = int(
+        finetune_mgkg_cfg.get("early_stopping_patience", finetune_patience)
+    )
+    finetune_mgkg_min_delta = float(
+        finetune_mgkg_cfg.get("early_stopping_min_delta", finetune_min_delta)
+    )
+    if finetune_mgkg_requested and finetune_mgkg_train_indices:
+        # The last stage is the deliverable target. Do not let a previous-stage
+        # SWA snapshot overwrite its dedicated mg/kg calibration.
+        swa_model = None
+        swa_updates = 0
+        swa_last_global_epoch = 0
+        trainable_parameters = apply_finetune_freeze(model, finetune_mgkg_freeze_mode)
+        finetune_mgkg_dataset = build_noisy_index_dataset(
+            dataset,
+            finetune_mgkg_train_indices,
+            replicates=augmentation_cfg.finetune_replicates,
+            numeric_noise_std=augmentation_cfg.numeric_noise_std,
+            target_noise_std=augmentation_cfg.target_noise_std,
+            seed=augmentation_cfg.seed + 200_000,
+        )
+        finetune_mgkg_loader = DataLoader(
+            finetune_mgkg_dataset,
+            batch_size=finetune_mgkg_config.batch_size,
+            shuffle=True,
+            num_workers=finetune_mgkg_config.num_workers,
+            collate_fn=collate_aggregated_task_batch,
+        )
+        finetune_mgkg_validation_loader = (
+            DataLoader(
+                _IndexDataset(dataset, finetune_mgkg_validation_indices),
+                batch_size=finetune_mgkg_config.batch_size,
+                shuffle=False,
+                num_workers=finetune_mgkg_config.num_workers,
+                collate_fn=collate_aggregated_task_batch,
+            )
+            if finetune_mgkg_validation_indices
+            else None
+        )
+        optimizer = build_optimizer(trainable_parameters, finetune_mgkg_config)
+        scheduler = build_scheduler(
+            optimizer,
+            finetune_mgkg_config,
+            finetune_mgkg_config.epochs,
+        )
+        finetune_mgkg_best_state: dict[str, Any] | None = None
+        for epoch in range(1, finetune_mgkg_config.epochs + 1):
+            epoch_loss = train_one_epoch(
+                model,
+                finetune_mgkg_loader,
+                optimizer,
+                loss_fn,
+                finetune_mgkg_config,
+                torch_device,
+            )
+            finetune_mgkg_ran = epoch
+            global_epoch = len(history) + 1
+            finetune_mgkg_validation_loss = (
+                evaluate_loss(
+                    model,
+                    finetune_mgkg_validation_loader,
+                    loss_fn,
+                    finetune_mgkg_config,
+                    torch_device,
+                )
+                if finetune_mgkg_validation_loader is not None
+                else None
+            )
+            monitor_loss = (
+                finetune_mgkg_validation_loss["mean_loss"]
+                if finetune_mgkg_validation_loss is not None
+                else epoch_loss["mean_loss"]
+            )
+            if finetune_mgkg_early_enabled:
+                improved = monitor_loss < finetune_mgkg_best_monitor_loss - finetune_mgkg_min_delta
+                if improved:
+                    finetune_mgkg_best_monitor_loss = monitor_loss
+                    finetune_mgkg_best_epoch = global_epoch
+                    finetune_mgkg_no_improve_epochs = 0
+                    finetune_mgkg_best_state = clone_state_dict(model)
+                else:
+                    finetune_mgkg_no_improve_epochs += 1
+            else:
+                finetune_mgkg_best_monitor_loss = monitor_loss
+                finetune_mgkg_best_epoch = global_epoch
+                finetune_mgkg_no_improve_epochs = 0
+                finetune_mgkg_best_state = clone_state_dict(model)
+            row = {
+                "phase": "finetune_mgkg",
+                "epoch": epoch,
+                "global_epoch": global_epoch,
+                **weighting_history_fields,
+                **epoch_loss,
+                "validation_loss": "" if finetune_mgkg_validation_loss is None else finetune_mgkg_validation_loss["mean_loss"],
+                "validation_task_loss": "" if finetune_mgkg_validation_loss is None else finetune_mgkg_validation_loss.get("mean_task_loss", ""),
+                "validation_toxicity_bin_loss": "" if finetune_mgkg_validation_loss is None else finetune_mgkg_validation_loss.get("mean_toxicity_bin_loss", ""),
+                "validation_toxicity_bin_samples": 0 if finetune_mgkg_validation_loss is None else finetune_mgkg_validation_loss.get("toxicity_bin_samples", 0),
+                "validation_censored_loss": "" if finetune_mgkg_validation_loss is None else finetune_mgkg_validation_loss.get("mean_censored_loss", ""),
+                "validation_censored_samples": 0 if finetune_mgkg_validation_loss is None else finetune_mgkg_validation_loss.get("censored_samples", 0),
+                "validation_samples": 0 if finetune_mgkg_validation_loss is None else finetune_mgkg_validation_loss["samples"],
+                "monitor_loss": monitor_loss,
+                "best_epoch": finetune_mgkg_best_epoch,
+                "no_improve_epochs": finetune_mgkg_no_improve_epochs,
+                "learning_rate": current_learning_rate(optimizer),
+                "swa_updates": 0,
+            }
+            history.append(row)
+            step_scheduler(scheduler, monitor_loss)
+            best_epoch = finetune_mgkg_best_epoch
+            best_monitor_loss = finetune_mgkg_best_monitor_loss
+            best_state = finetune_mgkg_best_state
+            validation_msg = (
+                ""
+                if finetune_mgkg_validation_loss is None
+                else f" validation_loss={finetune_mgkg_validation_loss['mean_loss']:.6f}"
+            )
+            print(
+                f"[finetune_mgkg epoch {epoch}] mean_loss={epoch_loss['mean_loss']:.6f}{validation_msg} "
+                f"samples={epoch_loss['samples']} best_epoch={best_epoch}",
+                flush=True,
+            )
+            if finetune_mgkg_early_enabled and finetune_mgkg_no_improve_epochs >= finetune_mgkg_patience:
+                print(
+                    f"[finetune_mgkg early-stop] epoch={epoch} best_epoch={finetune_mgkg_best_epoch} "
+                    f"monitor_loss={finetune_mgkg_best_monitor_loss:.6f}",
+                    flush=True,
+                )
+                break
+        if finetune_mgkg_best_state is not None:
+            model.load_state_dict(finetune_mgkg_best_state)
+
     if swa_model is not None and swa_updates > 0:
         model.load_state_dict(swa_model.module.state_dict())
         best_state = clone_state_dict(model)
@@ -1227,23 +1564,37 @@ def run_deep_experiment(
         best_model_path = None
     manifest = {
         "split_name": split_name,
+        "data_source": {
+            "modeling_tables_db": str(Path(db_path)),
+            "source_table": source_table or split_join_audit.get("source_table", ""),
+        },
         "rows": len(samples),
+        "head_routing": head_routing_mode,
+        "allow_mixed_target_dimensions": mixed_target_dimensions_allowed,
         "train_rows": len(train_indices),
         "actual_train_rows": len(actual_train_indices),
         "finetune_rows": len(finetune_indices),
         "finetune_train_rows": len(finetune_train_indices),
         "finetune_validation_rows": len(finetune_validation_indices),
         "finetune_validation_source": finetune_validation_source,
+        "finetune_mgkg_rows": len(finetune_mgkg_indices),
+        "finetune_mgkg_train_rows": len(finetune_mgkg_train_indices),
+        "finetune_mgkg_validation_rows": len(finetune_mgkg_validation_indices),
+        "finetune_mgkg_validation_source": finetune_mgkg_validation_source,
         "validation_rows": len(validation_indices),
         "validation_source": validation_source,
         "task_heads": list(task_heads),
         "skipped_tasks": skipped_tasks,
         "fingerprint_size": fingerprint_size,
         "encoder_source": encoder.source,
+        "molecular_descriptor_names": list(descriptor_names),
+        "descriptor_encoder": descriptor_encoder_cfg["manifest"],
         "device": train_config.device,
         "epochs": train_config.epochs,
         "finetune_epochs": finetune_config.epochs,
+        "finetune_mgkg_epochs": finetune_mgkg_config.epochs,
         "finetune_epochs_ran": finetune_ran,
+        "finetune_mgkg_epochs_ran": finetune_mgkg_ran,
         "epochs_ran": len(history),
         "best_epoch": best_epoch,
         "best_monitor_loss": best_monitor_loss if math.isfinite(best_monitor_loss) else None,
@@ -1307,8 +1658,27 @@ def run_deep_experiment(
             "batch_size": finetune_config.batch_size,
             "freeze": finetune_freeze_mode,
         },
+        "finetune_mgkg": {
+            "requested": finetune_mgkg_requested,
+            "enabled": bool(finetune_mgkg_requested and finetune_mgkg_indices),
+            "epochs": finetune_mgkg_config.epochs,
+            "epochs_ran": finetune_mgkg_ran,
+            "rows": len(finetune_mgkg_indices),
+            "train_rows": len(finetune_mgkg_train_indices),
+            "validation_rows": len(finetune_mgkg_validation_indices),
+            "validation_source": finetune_mgkg_validation_source,
+            "early_stopping": finetune_mgkg_early_enabled,
+            "early_stopping_patience": finetune_mgkg_patience,
+            "early_stopping_min_delta": finetune_mgkg_min_delta,
+            "learning_rate": finetune_mgkg_config.learning_rate,
+            "batch_size": finetune_mgkg_config.batch_size,
+            "freeze": finetune_mgkg_freeze_mode,
+        },
         "numeric_dim": dataset.numeric_dim(),
         "fingerprint_dim": dataset.fingerprint_dim(),
+        "graph_atom_feature_dim": 0 if graph_encoder is None else graph_encoder.atom_feature_dim,
+        "graph_edge_feature_dim": 0 if graph_encoder is None else graph_encoder.edge_feature_dim,
+        "graph_embedding_dim": 0 if graph_encoder is None else graph_encoder_cfg["embedding_dim"],
         "categorical_cardinalities": categorical_cardinalities,
         "adapter_cardinality": max(adapter_map.values(), default=0) + 1 if adapter_map else 0,
         "adapter_map": adapter_map,
@@ -1316,12 +1686,14 @@ def run_deep_experiment(
         "ablation_features": {
             "use_descriptors": ablation_spec.use_descriptors,
             "use_fingerprint": ablation_spec.use_fingerprint,
+            "use_molecular_graph": ablation_spec.use_molecular_graph,
             "use_context_numeric": ablation_spec.use_context_numeric,
             "use_duration_features": ablation_spec.use_duration_features,
             "use_species_lifestage": ablation_spec.use_species_lifestage,
             "use_other_categorical_context": ablation_spec.use_other_categorical_context,
             "use_molecular_residual": ablation_spec.use_molecular_residual,
             "use_medium_adapter": ablation_spec.use_medium_adapter,
+            "masked_descriptor_names": list(ablation_spec.masked_descriptor_names),
         },
     }
     preprocessing = build_preprocessing_manifest(
@@ -1333,6 +1705,9 @@ def run_deep_experiment(
         encoder_source=encoder.source,
         cache_path=cache_path,
         descriptor_count=descriptor_count,
+        descriptor_names=descriptor_names,
+        descriptor_encoder=descriptor_encoder_cfg["manifest"],
+        graph_encoder={} if graph_encoder is None else {**graph_encoder.to_manifest(), **graph_encoder_cfg},
         target_scaler=target_scaler,
         zscore_correction=zscore_correction,
         categorical_min_count=category_min_count,
@@ -1365,6 +1740,43 @@ def get_ablation_spec(name: str | None) -> AblationSpec:
     return ABLATION_SPECS[key]
 
 
+def normalize_head_routing(value: Any) -> str:
+    normalized = str(value or "task").strip().lower()
+    aliases = {
+        "task": "task",
+        "task_only": "task",
+        "task_target": "task_target",
+        "task_target_family": "task_target",
+    }
+    if normalized not in aliases:
+        allowed = ", ".join(sorted(set(aliases.values())))
+        raise ValueError(f"Unsupported head routing '{value}'. Allowed values: {allowed}")
+    return aliases[normalized]
+
+
+def apply_head_routing(frame: Any, *, mode: str) -> Any:
+    """Route output heads while retaining the scientific task label for reports."""
+    if "task_head" not in frame.columns:
+        raise ValueError("Head routing requires a task_head column.")
+    routed = frame.copy()
+    base = routed["task_head"].map(_category_value)
+    routed["base_task_head"] = base
+    if mode == "task":
+        routed["model_head"] = base
+    elif mode == "task_target":
+        if "target_family" in routed.columns:
+            target = routed["target_family"].map(_category_value)
+        elif "target_name" in routed.columns:
+            target = routed["target_name"].map(_category_value)
+        else:
+            raise ValueError("task_target head routing requires target_family or target_name.")
+        routed["model_head"] = base + "__" + target
+    else:  # pragma: no cover - normalize_head_routing guards this boundary.
+        raise ValueError(f"Unsupported normalized head routing mode: {mode}")
+    routed["task_head"] = routed["model_head"]
+    return routed
+
+
 def build_preprocessing_manifest(
     *,
     categorical_maps: dict[str, dict[str, int]],
@@ -1375,23 +1787,38 @@ def build_preprocessing_manifest(
     encoder_source: str,
     cache_path: str | None,
     descriptor_count: int | None = None,
+    descriptor_names: tuple[str, ...] | list[str] | None = None,
+    descriptor_encoder: Mapping[str, Any] | None = None,
+    graph_encoder: Mapping[str, Any] | None = None,
     target_scaler: TargetScaler | None = None,
     zscore_correction: ZScoreCorrection | None = None,
     categorical_min_count: int = 1,
 ) -> dict[str, Any]:
-    descriptor_names = _descriptor_feature_names(descriptor_count or len(MOLECULAR_DESCRIPTOR_NAMES))
-    numeric_feature_names = build_numeric_feature_names(descriptor_count or len(MOLECULAR_DESCRIPTOR_NAMES))
+    descriptor_names = tuple(
+        descriptor_names
+        if descriptor_names is not None
+        else _descriptor_feature_names(descriptor_count or len(MOLECULAR_DESCRIPTOR_NAMES))
+    )
+    numeric_feature_names = build_numeric_feature_names(
+        descriptor_count or len(descriptor_names) or len(MOLECULAR_DESCRIPTOR_NAMES),
+        descriptor_names=descriptor_names,
+    )
     numeric_feature_names = numeric_feature_names[: len(numeric_stats)]
+    masked_indices = descriptor_mask_indices(len(descriptor_names), ablation, descriptor_names=descriptor_names)
     return {
         "schema_version": 2,
         "ablation": ablation.name,
         "fingerprint_size": int(fingerprint_size),
         "encoder_source": encoder_source,
         "molecular_feature_cache": cache_path or "",
+        "molecular_graph_encoder": dict(graph_encoder or {}),
         "target_standardization": {} if target_scaler is None else target_scaler.to_manifest(),
         "feature_zscore_correction": {} if zscore_correction is None else zscore_correction.to_manifest(),
         "numeric_feature_names": numeric_feature_names,
         "molecular_descriptor_names": descriptor_names,
+        "descriptor_encoder": dict(descriptor_encoder or {"mode": "raw"}),
+        "masked_descriptor_names": list(ablation.masked_descriptor_names),
+        "masked_descriptor_indices": list(masked_indices),
         "context_numeric_columns": list(CONTEXT_NUMERIC_COLUMNS),
         "effect_level_numeric_columns": list(EFFECT_LEVEL_NUMERIC_COLUMNS),
         "effect_level_numeric_indices": list(effect_level_feature_indices(numeric_feature_names)),
@@ -1418,12 +1845,14 @@ def build_preprocessing_manifest(
         "ablation_features": {
             "use_descriptors": ablation.use_descriptors,
             "use_fingerprint": ablation.use_fingerprint,
+            "use_molecular_graph": ablation.use_molecular_graph,
             "use_context_numeric": ablation.use_context_numeric,
             "use_duration_features": ablation.use_duration_features,
             "use_species_lifestage": ablation.use_species_lifestage,
             "use_other_categorical_context": ablation.use_other_categorical_context,
             "use_molecular_residual": ablation.use_molecular_residual,
             "use_medium_adapter": ablation.use_medium_adapter,
+            "masked_descriptor_names": list(ablation.masked_descriptor_names),
         },
     }
 
@@ -1441,8 +1870,91 @@ def _descriptor_feature_names(count: int) -> list[str]:
     return [f"descriptor_{idx}" for idx in range(count)]
 
 
-def build_numeric_feature_names(descriptor_count: int) -> tuple[str, ...]:
-    return tuple(_descriptor_feature_names(descriptor_count) + list(CONTEXT_NUMERIC_COLUMNS))
+def build_numeric_feature_names(
+    descriptor_count: int,
+    *,
+    descriptor_names: tuple[str, ...] | list[str] | None = None,
+) -> tuple[str, ...]:
+    names = list(descriptor_names or _descriptor_feature_names(descriptor_count))
+    if len(names) != int(descriptor_count):
+        names = _descriptor_feature_names(descriptor_count)
+    return tuple(names + list(CONTEXT_NUMERIC_COLUMNS))
+
+
+def _descriptor_encoder_config(config: Mapping[str, Any], descriptor_names: tuple[str, ...]) -> dict[str, Any]:
+    molecule_cfg = config.get("features", {}).get("molecule", {})
+    if not isinstance(molecule_cfg, Mapping):
+        molecule_cfg = {}
+    encoder_cfg = molecule_cfg.get("descriptor_head", {})
+    if not isinstance(encoder_cfg, Mapping):
+        encoder_cfg = {}
+    mode = str(
+        encoder_cfg.get(
+            "mode",
+            molecule_cfg.get("descriptor_encoder_mode", "raw"),
+        )
+        or "raw"
+    ).strip().lower()
+    cluster_file = str(
+        encoder_cfg.get(
+            "cluster_file",
+            molecule_cfg.get("descriptor_cluster_file", ""),
+        )
+        or ""
+    ).strip()
+    clustered_modes = {"prior_clustered", "prior_clustered_heads", "clustered", "clustered_heads"}
+    group_indices = (
+        _load_descriptor_group_indices(cluster_file, descriptor_names)
+        if cluster_file and mode in clustered_modes
+        else {}
+    )
+    head_dim = int(encoder_cfg.get("head_dim", molecule_cfg.get("descriptor_head_dim", 64)))
+    group_head_dim = int(encoder_cfg.get("group_head_dim", molecule_cfg.get("descriptor_group_head_dim", 16)))
+    manifest = {
+        "mode": mode,
+        "head_dim": head_dim,
+        "group_head_dim": group_head_dim,
+        "cluster_file": cluster_file,
+        "group_count": len(group_indices),
+        "groups": {key: list(value) for key, value in group_indices.items()},
+    }
+    return {
+        "mode": mode,
+        "head_dim": head_dim,
+        "group_head_dim": group_head_dim,
+        "group_indices": group_indices,
+        "manifest": manifest,
+    }
+
+
+def _load_descriptor_group_indices(
+    cluster_file: str,
+    descriptor_names: tuple[str, ...],
+) -> dict[str, tuple[int, ...]]:
+    from qsar_tl.features.descriptor_groups import load_descriptor_group_indices
+
+    return load_descriptor_group_indices(cluster_file, descriptor_names)
+
+
+def _flatten_descriptor_groups(raw: Any, name_to_index: Mapping[str, int], prefix: str = "") -> dict[str, tuple[int, ...]]:
+    if isinstance(raw, Mapping):
+        result: dict[str, tuple[int, ...]] = {}
+        for key, value in raw.items():
+            group_name = f"{prefix}/{key}" if prefix else str(key)
+            result.update(_flatten_descriptor_groups(value, name_to_index, group_name))
+        return result
+    if isinstance(raw, list):
+        indices = tuple(
+            sorted(
+                {
+                    int(name_to_index[str(name)])
+                    for name in raw
+                    if str(name) in name_to_index
+                }
+            )
+        )
+        return {prefix: indices} if indices else {}
+    return {}
 
 
 def effect_level_feature_indices(feature_names: tuple[str, ...] | list[str]) -> tuple[int, ...]:
@@ -1482,9 +1994,19 @@ class MolecularFeatureBuilder:
     def __init__(self, *, fingerprint_size: int = 512, cache_path: str | Path | None = None) -> None:
         self.fingerprint_size = fingerprint_size
         self.cache = load_molecular_feature_cache(cache_path, fingerprint_size=fingerprint_size) if cache_path else {}
+        self.cache_descriptor_names = (
+            load_molecular_feature_cache_descriptor_names(cache_path, fingerprint_size=fingerprint_size)
+            if cache_path
+            else ()
+        )
+        self.cache_source = (
+            load_molecular_feature_cache_source(cache_path, fingerprint_size=fingerprint_size)
+            if cache_path
+            else ""
+        )
         self._rdkit_available = self._check_rdkit()
         if self.cache:
-            self.source = "rdkit_cache"
+            self.source = self.cache_source or "molecular_feature_cache"
         elif self._rdkit_available:
             self.source = "rdkit"
         else:
@@ -1516,7 +2038,9 @@ class MolecularFeatureBuilder:
         text = self._normalize_smiles(smiles)
         cached = self.cache.get(text)
         if cached is not None:
-            return cached
+            return self._align_to_cache_schema(cached)
+        if self.cache_descriptor_names:
+            return self._encode_cache_miss(text)
         if self._rdkit_available and text.strip():
             try:
                 return self._encode_rdkit(text)
@@ -1546,6 +2070,51 @@ class MolecularFeatureBuilder:
         fingerprint = generator.GetFingerprint(mol)
         return descriptors, [float(bit) for bit in fingerprint.ToBitString()]
 
+    def _align_to_cache_schema(self, features: tuple[list[float], list[float]]) -> tuple[list[float], list[float]]:
+        descriptors, fingerprint = features
+        if self.cache_descriptor_names:
+            descriptor_count = len(self.cache_descriptor_names)
+            descriptors = [float(value) for value in descriptors[:descriptor_count]]
+            if len(descriptors) < descriptor_count:
+                descriptors.extend([0.0] * (descriptor_count - len(descriptors)))
+        fingerprint = [float(value) for value in fingerprint[: self.fingerprint_size]]
+        if len(fingerprint) < self.fingerprint_size:
+            fingerprint.extend([0.0] * (self.fingerprint_size - len(fingerprint)))
+        return descriptors, fingerprint
+
+    def _encode_cache_miss(self, smiles: str) -> tuple[list[float], list[float]]:
+        descriptors = [0.0] * len(self.cache_descriptor_names)
+        return descriptors, self._fingerprint_from_smiles(smiles)
+
+    def _fingerprint_from_smiles(self, smiles: str) -> list[float]:
+        text = smiles or ""
+        if self._rdkit_available and text.strip():
+            try:
+                from rdkit import Chem
+                from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
+
+                mol = Chem.MolFromSmiles(text)
+                if mol is not None:
+                    generator = GetMorganGenerator(radius=2, fpSize=self.fingerprint_size)
+                    return [float(bit) for bit in generator.GetFingerprint(mol).ToBitString()]
+            except Exception:
+                pass
+        bits = [0.0] * self.fingerprint_size
+        for ngram in _smiles_ngrams(text):
+            digest = hashlib.blake2b(ngram.encode("utf-8"), digest_size=8).hexdigest()
+            bits[int(digest, 16) % self.fingerprint_size] = 1.0
+        return bits
+
+    def descriptor_names(self, descriptor_count: int | None = None) -> tuple[str, ...]:
+        count = int(descriptor_count or 0)
+        if self.cache_descriptor_names and (count <= 0 or len(self.cache_descriptor_names) == count):
+            return tuple(self.cache_descriptor_names)
+        if count == len(MOLECULAR_DESCRIPTOR_NAMES) and self.source in {"rdkit", "rdkit_cache"}:
+            return tuple(MOLECULAR_DESCRIPTOR_NAMES)
+        if count > 0:
+            return tuple(f"descriptor_{idx}" for idx in range(count))
+        return tuple(MOLECULAR_DESCRIPTOR_NAMES)
+
     def _encode_fallback(self, smiles: str) -> tuple[list[float], list[float]]:
         text = smiles or ""
         counts = Counter(text)
@@ -1566,11 +2135,73 @@ class MolecularFeatureBuilder:
         return descriptors, bits
 
 
+class MolecularGraphFeatureBuilder:
+    def __init__(self, *, cache_path: str | Path | None = None) -> None:
+        from qsar_tl.features.molecular_graph import (
+            ATOM_FEATURE_NAMES,
+            BOND_FEATURE_NAMES,
+            empty_molecular_graph,
+            load_molecular_graph_cache,
+        )
+
+        self.cache_path = "" if cache_path is None else str(cache_path)
+        self.cache = load_molecular_graph_cache(cache_path) if cache_path else {}
+        self.atom_feature_names = tuple(ATOM_FEATURE_NAMES)
+        self.bond_feature_names = tuple(BOND_FEATURE_NAMES)
+        if self.cache:
+            first = next(iter(self.cache.values()))
+            self.atom_feature_names = tuple(first.get("atom_feature_names") or self.atom_feature_names)
+            self.bond_feature_names = tuple(first.get("bond_feature_names") or self.bond_feature_names)
+        self.atom_feature_dim = len(self.atom_feature_names)
+        self.edge_feature_dim = len(self.bond_feature_names)
+        self._empty_graph = empty_molecular_graph
+
+    def encode(self, smiles: object) -> dict[str, Any]:
+        text = MolecularFeatureBuilder._normalize_smiles(smiles)
+        cached = self.cache.get(text)
+        if cached is not None:
+            return cached
+        return self._empty_graph(text)
+
+    def to_manifest(self) -> dict[str, Any]:
+        return {
+            "cache_path": self.cache_path,
+            "cache_rows": len(self.cache),
+            "atom_feature_dim": self.atom_feature_dim,
+            "edge_feature_dim": self.edge_feature_dim,
+            "atom_feature_names": list(self.atom_feature_names),
+            "bond_feature_names": list(self.bond_feature_names),
+        }
+
+
 def _molecular_cache_path(config: Mapping[str, Any]) -> str | None:
     value = config.get("experiment", {}).get("molecular_feature_cache")
     if value is None or str(value).strip() == "":
         return None
     return str(value)
+
+
+def _molecular_graph_cache_path(config: Mapping[str, Any]) -> str | None:
+    molecule_cfg = config.get("features", {}).get("molecule", {})
+    if not isinstance(molecule_cfg, Mapping):
+        return None
+    value = molecule_cfg.get("graph_cache")
+    if value is None or str(value).strip() == "":
+        return None
+    return str(value)
+
+
+def _graph_encoder_config(config: Mapping[str, Any]) -> dict[str, int]:
+    molecule_cfg = config.get("features", {}).get("molecule", {})
+    if not isinstance(molecule_cfg, Mapping):
+        molecule_cfg = {}
+    graph_cfg = molecule_cfg.get("graph_encoder", {})
+    if not isinstance(graph_cfg, Mapping):
+        graph_cfg = {}
+    return {
+        "embedding_dim": int(graph_cfg.get("embedding_dim", molecule_cfg.get("graph_embedding_dim", 64))),
+        "message_steps": int(graph_cfg.get("message_steps", molecule_cfg.get("graph_message_steps", 2))),
+    }
 
 
 def load_molecular_feature_cache(
@@ -1596,6 +2227,60 @@ def load_molecular_feature_cache(
                 continue
             cache[smiles] = (descriptors, fingerprint)
     return cache
+
+
+def load_molecular_feature_cache_descriptor_names(
+    cache_path: str | Path | None,
+    *,
+    fingerprint_size: int,
+) -> tuple[str, ...]:
+    row = _first_valid_molecular_cache_row(cache_path, fingerprint_size=fingerprint_size)
+    if not row:
+        return ()
+    names = row.get("descriptor_names") or row.get("molecular_descriptor_names") or []
+    descriptors = row.get("descriptors", [])
+    if isinstance(names, list) and len(names) == len(descriptors):
+        return tuple(str(name) for name in names)
+    return tuple(f"descriptor_{idx}" for idx in range(len(descriptors)))
+
+
+def load_molecular_feature_cache_source(
+    cache_path: str | Path | None,
+    *,
+    fingerprint_size: int,
+) -> str:
+    row = _first_valid_molecular_cache_row(cache_path, fingerprint_size=fingerprint_size)
+    if not row:
+        return ""
+    for key in ("feature_source", "encoder_source", "source"):
+        value = row.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    names = row.get("descriptor_names") or []
+    if names and len(names) != len(MOLECULAR_DESCRIPTOR_NAMES):
+        return "descriptor_cache"
+    return "rdkit_cache"
+
+
+def _first_valid_molecular_cache_row(
+    cache_path: str | Path | None,
+    *,
+    fingerprint_size: int,
+) -> dict[str, Any]:
+    if cache_path is None:
+        return {}
+    path = Path(cache_path)
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            fingerprint = row.get("fingerprint", [])
+            if len(fingerprint) == fingerprint_size:
+                return row
+    return {}
 
 
 def build_molecular_feature_cache(
@@ -1702,21 +2387,42 @@ def fit_adapter_map(frame: Any, *, ablation: AblationSpec | None = None) -> dict
     return {value: idx + 1 for idx, value in enumerate(values)}
 
 
-def raw_numeric_matrix(frame: Any, encoder: MolecularFeatureBuilder, *, ablation: AblationSpec | None = None) -> np.ndarray:
+def raw_numeric_matrix(
+    frame: Any,
+    encoder: MolecularFeatureBuilder,
+    *,
+    descriptor_names: tuple[str, ...] | list[str] | None = None,
+    ablation: AblationSpec | None = None,
+) -> np.ndarray:
     spec = ablation or ABLATION_SPECS["full"]
-    molecular_rows = [masked_descriptors(encoder.encode(value)[0], spec) for value in frame.get("smiles", [])]
+    names = tuple(descriptor_names or encoder.descriptor_names())
+    molecular_rows = [
+        masked_descriptors(encoder.encode(value)[0], spec, descriptor_names=names)
+        for value in frame.get("smiles", [])
+    ]
     context_rows = [_context_numeric(row, spec) for _, row in frame.iterrows()]
     matrix = np.array([mol + ctx for mol, ctx in zip(molecular_rows, context_rows)], dtype=float)
     if matrix.size == 0:
         matrix = np.zeros((1, len(MOLECULAR_DESCRIPTOR_NAMES) + len(CONTEXT_NUMERIC_COLUMNS)))
-    return matrix
+    return bounded_numeric_matrix(matrix)
 
 
-def fit_numeric_stats(frame: Any, encoder: MolecularFeatureBuilder, *, ablation: AblationSpec | None = None) -> dict[str, tuple[float, float]]:
-    matrix = raw_numeric_matrix(frame, encoder, ablation=ablation)
+def fit_numeric_stats(
+    frame: Any,
+    encoder: MolecularFeatureBuilder,
+    *,
+    descriptor_names: tuple[str, ...] | list[str] | None = None,
+    ablation: AblationSpec | None = None,
+) -> dict[str, tuple[float, float]]:
+    matrix = raw_numeric_matrix(frame, encoder, descriptor_names=descriptor_names, ablation=ablation)
     means = np.nanmean(matrix, axis=0)
     stds = np.nanstd(matrix, axis=0)
-    return {str(idx): (float(mean), float(std if std > 1e-12 else 1.0)) for idx, (mean, std) in enumerate(zip(means, stds))}
+    stats: dict[str, tuple[float, float]] = {}
+    for idx, (mean, std) in enumerate(zip(means, stds)):
+        mean_value = float(mean) if math.isfinite(float(mean)) else 0.0
+        std_value = float(std) if math.isfinite(float(std)) and float(std) > 1e-12 else 1.0
+        stats[str(idx)] = (mean_value, std_value)
+    return stats
 
 
 def fit_zscore_correction(
@@ -1725,6 +2431,7 @@ def fit_zscore_correction(
     *,
     numeric_stats: dict[str, tuple[float, float]],
     feature_names: tuple[str, ...],
+    descriptor_names: tuple[str, ...] | list[str] | None = None,
     config: ZScoreCorrectionConfig,
     ablation: AblationSpec | None = None,
 ) -> ZScoreCorrection:
@@ -1738,7 +2445,7 @@ def fit_zscore_correction(
             fit_split_parts=split_parts,
             stats={},
         )
-    matrix = raw_numeric_matrix(frame, encoder, ablation=ablation)
+    matrix = raw_numeric_matrix(frame, encoder, descriptor_names=descriptor_names, ablation=ablation)
     stats: dict[str, dict[str, float]] = {}
     for idx, name in enumerate(feature_names[: matrix.shape[1]]):
         mean, std = numeric_stats[str(idx)]
@@ -1774,21 +2481,27 @@ def build_deep_samples(
     target_scaler: TargetScaler | None = None,
     zscore_correction: ZScoreCorrection | None = None,
     adapter_map: dict[str, int] | None = None,
+    descriptor_names: tuple[str, ...] | list[str] | None = None,
     ablation: AblationSpec | None = None,
+    graph_encoder: MolecularGraphFeatureBuilder | None = None,
     toxicity_binning_config: ToxicityBinningConfig | None = None,
     toxicity_bin_scheme: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     spec = ablation or ABLATION_SPECS["full"]
+    descriptor_names = tuple(descriptor_names or encoder.descriptor_names())
     samples: list[dict[str, Any]] = []
     for _, row in frame.iterrows():
         descriptors, fingerprint = encoder.encode(row.get("smiles"))
-        numeric = masked_descriptors(descriptors, spec) + _context_numeric(row, spec)
+        numeric = masked_descriptors(descriptors, spec, descriptor_names=descriptor_names) + _context_numeric(row, spec)
         fingerprint = masked_fingerprint(fingerprint, spec)
         normalized = []
         for idx, value in enumerate(numeric):
             mean, std = numeric_stats[str(idx)]
-            value = 0.0 if value is None or not math.isfinite(float(value)) else float(value)
-            z_value = (value - mean) / std
+            value = bounded_numeric_value(value)
+            std = float(std) if math.isfinite(float(std)) and float(std) > 1e-12 else 1.0
+            z_value = (value - float(mean)) / std
+            if not math.isfinite(float(z_value)):
+                z_value = 0.0
             normalized.append(zscore_correction.transform(idx, z_value) if zscore_correction is not None else z_value)
         categorical_ids = {
             column: encode_category_id(row.get(column), mapping)
@@ -1802,34 +2515,39 @@ def build_deep_samples(
         metadata = sample_metadata(row, target_column=target_column, scale_key=scale_key)
         toxicity_fields: dict[str, Any] = {}
         if toxicity_binning_config is not None and toxicity_bin_scheme is not None:
-            descriptor_mol_weight = (
-                descriptors[0]
-                if descriptors and getattr(encoder, "source", "") != "stable_smiles_fallback"
-                else None
+            descriptor_mol_weight = descriptor_value_by_name(
+                descriptors,
+                descriptor_names,
+                ("MolWt", "MolecularWeight", "Molecular_Weight", "MW", "MWt"),
             )
+            if getattr(encoder, "source", "") == "stable_smiles_fallback":
+                descriptor_mol_weight = None
             toxicity_fields = assign_toxicity_bin(
                 row,
                 toxicity_bin_scheme,
                 config=toxicity_binning_config,
                 descriptor_mol_weight=descriptor_mol_weight,
             ).as_sample_fields()
-        samples.append(
-            {
-                "sample_id": row.get("aggregate_id"),
-                "molecular_numeric": normalized,
-                "fingerprint": fingerprint,
-                "categorical_ids": categorical_ids,
-                "adapter_name": row_adapter_name,
-                "adapter_id": adapter_id,
-                "task_head": str(row.get("task_head")),
-                "target_value": float(scaled_target),
-                "target_value_raw": raw_target,
-                "target_value_scaled": float(scaled_target),
-                "split_part": str(row.get("split_part")),
-                **metadata,
-                **toxicity_fields,
-            }
-        )
+        sample = {
+            "sample_id": row.get("aggregate_id"),
+            "molecular_numeric": normalized,
+            "fingerprint": fingerprint,
+            "categorical_ids": categorical_ids,
+            "adapter_name": row_adapter_name,
+            "adapter_id": adapter_id,
+            "task_head": str(row.get("task_head")),
+            "target_value": float(scaled_target),
+            "target_value_raw": raw_target,
+            "target_value_scaled": float(scaled_target),
+            "split_part": str(row.get("split_part")),
+            **metadata,
+            **toxicity_fields,
+        }
+        if spec.use_molecular_graph:
+            if graph_encoder is None:
+                raise ValueError("Molecular graph ablation requires a graph encoder.")
+            sample["molecular_graph"] = graph_encoder.encode(row.get("smiles"))
+        samples.append(sample)
     return samples
 
 
@@ -1848,6 +2566,9 @@ def build_censored_training_samples(
     config: CensoredLossConfig,
     kept_task_heads: tuple[str, ...],
     split_parts: tuple[str, ...],
+    head_routing_mode: str = "task",
+    descriptor_names: tuple[str, ...] | list[str] | None = None,
+    graph_encoder: MolecularGraphFeatureBuilder | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     import pandas as pd
 
@@ -1887,6 +2608,7 @@ def build_censored_training_samples(
             if not task:
                 skipped["unmapped_task"] += 1
                 continue
+            task = route_censored_task_head(task, row, mode=head_routing_mode)
             if task["task_head"] not in kept_tasks:
                 skipped["task_not_trained"] += 1
                 continue
@@ -1931,6 +2653,7 @@ def build_censored_training_samples(
     samples = build_deep_samples(
         censored_frame,
         encoder=encoder,
+        descriptor_names=descriptor_names,
         categorical_maps=categorical_maps,
         adapter_map=adapter_map,
         numeric_stats=numeric_stats,
@@ -1938,6 +2661,7 @@ def build_censored_training_samples(
         target_scaler=target_scaler,
         zscore_correction=zscore_correction,
         ablation=ablation,
+        graph_encoder=graph_encoder,
     )
     for sample, row in zip(samples, rows):
         sample["censored_direction"] = row["censored_direction"]
@@ -2052,6 +2776,33 @@ def map_censored_task(row: Mapping[str, Any]) -> dict[str, str]:
         "task_family": str(mapping.task_family or ""),
         "effect_family": str(mapping.effect_family or ""),
     }
+
+
+def route_censored_task_head(
+    task: Mapping[str, str],
+    row: Mapping[str, Any],
+    *,
+    mode: str,
+) -> dict[str, str]:
+    routed = dict(task)
+    base_task_head = str(routed.get("task_head", ""))
+    routed["base_task_head"] = base_task_head
+    if mode == "task":
+        routed["model_head"] = base_task_head
+        return routed
+    if mode != "task_target":
+        raise ValueError(f"Unsupported normalized head routing mode: {mode}")
+    target_family = str(row.get("target_family", "") or "").strip()
+    if not target_family:
+        target_name = str(row.get("target_name", "") or "").strip()
+        target_family = {
+            "ptox_mol_l": "aquatic_pTox_mol_L",
+            "neg_log10_mg_kg": "solid_neglog_mg_kg",
+        }.get(target_name, target_name)
+    model_head = f"{base_task_head}__{_category_value(target_family)}"
+    routed["task_head"] = model_head
+    routed["model_head"] = model_head
+    return routed
 
 
 def censored_bound_value(row: Mapping[str, Any]) -> float | None:
@@ -2286,10 +3037,66 @@ def _target_dimension_value(row: Mapping[str, Any]) -> str:
     return _category_value(value)
 
 
-def masked_descriptors(descriptors: list[float], ablation: AblationSpec) -> list[float]:
-    if ablation.use_descriptors:
+def masked_descriptors(
+    descriptors: list[float],
+    ablation: AblationSpec,
+    *,
+    descriptor_names: tuple[str, ...] | list[str] | None = None,
+) -> list[float]:
+    if not ablation.use_descriptors:
+        return [0.0] * len(descriptors)
+    if not ablation.masked_descriptor_names:
         return descriptors
-    return [0.0] * len(descriptors)
+    masked = list(descriptors)
+    for idx in descriptor_mask_indices(len(masked), ablation, descriptor_names=descriptor_names):
+        masked[idx] = 0.0
+    return masked
+
+
+def descriptor_mask_indices(
+    descriptor_count: int,
+    ablation: AblationSpec,
+    *,
+    descriptor_names: tuple[str, ...] | list[str] | None = None,
+) -> tuple[int, ...]:
+    if not ablation.masked_descriptor_names:
+        return ()
+    names = tuple(descriptor_names or _descriptor_feature_names(descriptor_count))
+    if len(names) != descriptor_count:
+        names = tuple(_descriptor_feature_names(descriptor_count))
+    masked_names = set(ablation.masked_descriptor_names)
+    return tuple(idx for idx, name in enumerate(names) if name in masked_names)
+
+
+def descriptor_index_by_name(
+    descriptor_names: tuple[str, ...] | list[str],
+    aliases: tuple[str, ...] | list[str],
+) -> int | None:
+    normalized = {normalize_descriptor_name(name): idx for idx, name in enumerate(descriptor_names)}
+    for alias in aliases:
+        idx = normalized.get(normalize_descriptor_name(alias))
+        if idx is not None:
+            return idx
+    return None
+
+
+def descriptor_value_by_name(
+    descriptors: list[float],
+    descriptor_names: tuple[str, ...] | list[str],
+    aliases: tuple[str, ...] | list[str],
+) -> float | None:
+    idx = descriptor_index_by_name(descriptor_names, aliases)
+    if idx is None or idx < 0 or idx >= len(descriptors):
+        return None
+    try:
+        value = float(descriptors[idx])
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def normalize_descriptor_name(name: object) -> str:
+    return "".join(ch for ch in str(name).lower() if ch.isalnum())
 
 
 def masked_fingerprint(fingerprint: list[float], ablation: AblationSpec) -> list[float]:
@@ -2454,6 +3261,8 @@ def mark_internal_validation_samples(
 def apply_source_similarity_weights(
     samples: list[dict[str, Any]],
     config: SourceWeightingConfig,
+    *,
+    descriptor_names: tuple[str, ...] | list[str] | None = None,
 ) -> dict[str, Any]:
     for sample in samples:
         sample["sample_weight"] = 1.0
@@ -2503,8 +3312,8 @@ def apply_source_similarity_weights(
         similarities = max_tanimoto_similarity(source_fp, target_fp)
         raw_weights = 1.0 + float(config.alpha) * similarities
     if config.method in {"proxy_distance_to_finetune", "tanimoto_proxy_to_finetune"}:
-        source_proxy = proxy_descriptor_matrix(samples, source_indices)
-        target_proxy = proxy_descriptor_matrix(samples, target_indices)
+        source_proxy = proxy_descriptor_matrix(samples, source_indices, descriptor_names=descriptor_names)
+        target_proxy = proxy_descriptor_matrix(samples, target_indices, descriptor_names=descriptor_names)
         distances = min_proxy_distance(source_proxy, target_proxy)
         proxy_weights = np.exp(-float(config.alpha) * distances)
         raw_weights = proxy_weights if raw_weights is None else raw_weights * proxy_weights
@@ -2545,13 +3354,35 @@ def apply_source_similarity_weights(
     return summary
 
 
-def proxy_descriptor_matrix(samples: list[dict[str, Any]], indices: list[int]) -> np.ndarray:
-    proxy_indices = [0, 1, 2]
+def proxy_descriptor_matrix(
+    samples: list[dict[str, Any]],
+    indices: list[int],
+    *,
+    descriptor_names: tuple[str, ...] | list[str] | None = None,
+) -> np.ndarray:
+    proxy_indices = descriptor_proxy_indices(descriptor_names)
     rows: list[list[float]] = []
     for idx in indices:
         values = list(samples[idx].get("molecular_numeric", []))
         rows.append([safe_proxy_float(values[pos]) if pos < len(values) else 0.0 for pos in proxy_indices])
     return np.asarray(rows, dtype=np.float32)
+
+
+def descriptor_proxy_indices(descriptor_names: tuple[str, ...] | list[str] | None = None) -> tuple[int, ...]:
+    names = [str(name) for name in (descriptor_names or MOLECULAR_DESCRIPTOR_NAMES)]
+    aliases = (
+        ("MolWt", "MolecularWeight", "Molecular_Weight", "MW", "MWt"),
+        ("TPSA", "TopoPSA", "TopologicalPolarSurfaceArea"),
+        ("MolLogP", "ALogP", "XLogP", "MLogP", "LogP"),
+    )
+    indices: list[int] = []
+    for group in aliases:
+        idx = descriptor_index_by_name(names, group)
+        if idx is not None:
+            indices.append(idx)
+    if len(indices) == len(aliases):
+        return tuple(indices)
+    return tuple(range(min(3, len(names))))
 
 
 def safe_proxy_float(value: Any) -> float:
@@ -3218,6 +4049,7 @@ def train_one_epoch(
     for batch in dataloader:
         molecular_numeric = batch["molecular_numeric"].to(device)
         fingerprint = batch["fingerprint"].to(device)
+        molecular_graph = graph_to_device(batch.get("molecular_graph"), device)
         categorical_ids = {key: value.to(device) for key, value in batch["categorical_ids"].items()}
         adapter_ids = batch.get("adapter_id")
         adapter_ids = adapter_ids.to(device) if adapter_ids is not None else None
@@ -3247,6 +4079,7 @@ def train_one_epoch(
             censored_direction_id=censored_direction_id,
             censored_loss_weight=config.censored_loss_weight,
             censored_loss_margin=config.censored_loss_margin,
+            molecular_graph=molecular_graph,
             return_components=True,
         )
         task_loss = loss_components["regression_loss"]
@@ -3312,6 +4145,7 @@ def evaluate_loss(model: Any, dataloader: Any, loss_fn: Any, config: DeepTrainin
         for batch in dataloader:
             molecular_numeric = batch["molecular_numeric"].to(device)
             fingerprint = batch["fingerprint"].to(device)
+            molecular_graph = graph_to_device(batch.get("molecular_graph"), device)
             categorical_ids = {key: value.to(device) for key, value in batch["categorical_ids"].items()}
             adapter_ids = batch.get("adapter_id")
             adapter_ids = adapter_ids.to(device) if adapter_ids is not None else None
@@ -3338,6 +4172,7 @@ def evaluate_loss(model: Any, dataloader: Any, loss_fn: Any, config: DeepTrainin
                 censored_direction_id=censored_direction_id,
                 censored_loss_weight=config.censored_loss_weight,
                 censored_loss_margin=config.censored_loss_margin,
+                molecular_graph=molecular_graph,
                 return_components=True,
             )
             loss = loss_components["loss"]
@@ -3381,11 +4216,15 @@ def batch_weighted_loss(
     censored_direction_id: Any | None = None,
     censored_loss_weight: float = 0.0,
     censored_loss_margin: float = 0.0,
+    molecular_graph: Any | None = None,
     return_components: bool = False,
 ) -> Any:
     import torch
 
-    outputs = model(molecular_numeric, fingerprint, categorical_ids, adapter_ids=adapter_ids)
+    model_kwargs = {"adapter_ids": adapter_ids}
+    if molecular_graph is not None:
+        model_kwargs["molecular_graph"] = molecular_graph
+    outputs = model(molecular_numeric, fingerprint, categorical_ids, **model_kwargs)
     censored_ids = (
         torch.zeros(targets.shape[0], dtype=torch.long, device=device)
         if censored_direction_id is None
@@ -3541,6 +4380,7 @@ def coral_batch_loss(
 def shared_representation(model: Any, batch: Mapping[str, Any], *, device: Any) -> Any:
     molecular_numeric = batch["molecular_numeric"].to(device)
     fingerprint = batch["fingerprint"].to(device)
+    molecular_graph = graph_to_device(batch.get("molecular_graph"), device)
     categorical_ids = {key: value.to(device) for key, value in batch["categorical_ids"].items()}
     adapter_ids = batch.get("adapter_id")
     adapter_ids = adapter_ids.to(device) if adapter_ids is not None else None
@@ -3549,6 +4389,7 @@ def shared_representation(model: Any, batch: Mapping[str, Any], *, device: Any) 
         fingerprint=fingerprint,
         categorical_ids=categorical_ids,
         adapter_ids=adapter_ids,
+        molecular_graph=molecular_graph,
     )
 
 
@@ -3585,15 +4426,19 @@ def predict_all(
         for batch in loader:
             molecular_numeric = batch["molecular_numeric"].to(device)
             fingerprint = batch["fingerprint"].to(device)
+            molecular_graph = graph_to_device(batch.get("molecular_graph"), device)
             categorical_ids = {key: value.to(device) for key, value in batch["categorical_ids"].items()}
             adapter_ids = batch.get("adapter_id")
             adapter_ids = adapter_ids.to(device) if adapter_ids is not None else None
-            outputs = model(molecular_numeric, fingerprint, categorical_ids, adapter_ids=adapter_ids)
+            model_kwargs = {"adapter_ids": adapter_ids}
+            if molecular_graph is not None:
+                model_kwargs["molecular_graph"] = molecular_graph
+            outputs = model(molecular_numeric, fingerprint, categorical_ids, **model_kwargs)
             task_heads = list(batch["task_head"])
             targets = batch["target_value"].detach().cpu().tolist()
-            for row_idx, task_head in enumerate(task_heads):
+            for row_idx, model_head in enumerate(task_heads):
                 sample_meta = samples[cursor + row_idx]
-                y_pred_scaled = float(outputs[task_head][row_idx].detach().cpu())
+                y_pred_scaled = float(outputs[model_head][row_idx].detach().cpu())
                 scale_key = str(sample_meta.get("target_scale_key", GLOBAL_TARGET_SCALE_KEY))
                 y_pred = (
                     y_pred_scaled
@@ -3609,7 +4454,8 @@ def predict_all(
                 prediction_row.update(
                     {
                         "split_part": sample_meta["split_part"],
-                        "task_head": task_head,
+                        "task_head": sample_meta.get("base_task_head", model_head),
+                        "model_head": model_head,
                         "target_name": sample_meta.get("target_name", ""),
                         "medium_domain": sample_meta.get("medium_domain", ""),
                         "y_true": y_true,
