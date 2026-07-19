@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from qsar_tl.training.meta_ensemble import (
     deterministic_meta_split,
@@ -14,6 +15,7 @@ from qsar_tl.training.meta_ensemble import (
     regression_metrics,
 )
 from scripts.build_v1_2_42_e_series_oof_splits import build_oof_splits
+from scripts.summarize_v1_2_42_e_series import reconcile_selection_identities
 
 
 def synthetic_meta_rows(n: int = 96) -> list[dict[str, object]]:
@@ -68,6 +70,46 @@ def test_meta_monitor_split_is_identity_deterministic() -> None:
     assert {row["aggregate_id"] for row in monitor_a} == {
         row["aggregate_id"] for row in monitor_b
     }
+
+
+def test_selection_reconciliation_excludes_only_absent_task_families() -> None:
+    oof_rows = [
+        {"aggregate_id": "kept-1", "task_route": "ECx_Growth__target", "task_family": "ECx"},
+        {"aggregate_id": "kept-2", "task_route": "ECx_Mortality__target", "task_family": "ECx"},
+    ]
+    requested = {
+        "kept-1": {"task_route": "ECx_Growth__target", "task_family": "ECx"},
+        "rare-1": {"task_route": "ECx_RareEndpoint__target", "task_family": "ECx"},
+        "rare-2": {"task_route": "ECx_RareEndpoint__target", "task_family": "ECx"},
+    }
+
+    eligible, audit = reconcile_selection_identities(
+        oof_rows,
+        requested_selection_rows=requested,
+    )
+
+    assert eligible == {"kept-1"}
+    assert audit["selection_identity_excluded_n"] == 2
+    assert audit["selection_identity_excluded_by_task_family"] == {"ECx": 2}
+    assert audit["selection_identity_excluded_by_task_route"] == {
+        "ECx_RareEndpoint__target": 2
+    }
+
+
+def test_selection_reconciliation_fails_on_unexplained_missing_identity() -> None:
+    oof_rows = [
+        {"aggregate_id": "kept-1", "task_route": "ECx_Growth__target", "task_family": "ECx"}
+    ]
+    requested = {
+        "kept-1": {"task_route": "ECx_Growth__target", "task_family": "ECx"},
+        "missing-growth": {"task_route": "ECx_Growth__target", "task_family": "ECx"},
+    }
+
+    with pytest.raises(ValueError, match="OOF-eligible task route"):
+        reconcile_selection_identities(
+            oof_rows,
+            requested_selection_rows=requested,
+        )
 
 
 def test_oof_split_builder_covers_outer_training_once_and_omits_test(tmp_path: Path) -> None:

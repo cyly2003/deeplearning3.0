@@ -1877,3 +1877,30 @@ python -m qsar_tl.cli run-baseline --config configs\experiment.example.yaml --db
 - Formal run started at `2026-07-19T07:11:50+08:00`, two concurrent S1 runs.
   Controller log: `outputs/logs/v1_2_41_three_stage_optimization_matrix.log`.
   Expected completion is approximately 2-2.5 hours after launch.
+
+## 2026-07-19 v1.2.42 E-series OOF no-winner result
+
+- All 20 screening base units completed successfully: Direct/Transfer x seeds
+  `42, 3407` x five OOF folds. The outer test was absent from every OOF split
+  and was not read during selection.
+- The original locked v1.2.40 seed42 stage-3 validation set contained 2,433
+  identities. Paired OOF predictions covered 2,325 of them. The 108 eligibility
+  exclusions came only from task routes below the minimum-support threshold in
+  the outer-train-only OOF space: `ECx_Population` 32,
+  `LOEC_GeneticDamage` 38, and `NOEC_Physiology` 38. This exclusion is now
+  explicit and fail-closed for any missing identity from an OOF-eligible route.
+- Validation-only native `-log10(mol/kg)` metrics (`n=2325`):
+  - E0 Transfer anchor: R2 `0.656425`, RMSE `0.821628`, MAE `0.582290`.
+  - E1 constrained blend: R2 `0.655596`, RMSE `0.822619`, MAE `0.581000`.
+  - E2 contextual gate: R2 `0.656414`, RMSE `0.821642`, MAE `0.582328`.
+  - E3 bounded residual head: R2 `0.656228`, RMSE `0.821863`, MAE `0.580657`.
+- No candidate improved both R2 and MAE versus E0. E1 and E3 reduced MAE by
+  only `0.001290` and `0.001634`, respectively, while slightly reducing R2.
+  The locked winner is therefore null, seeds `2042/8417` were not expanded,
+  and no outer-test or common-mg/kg metrics were generated for E1-E3.
+- This OOF validation R2 is not directly comparable with the v1.2.40 four-seed
+  full-fit outer-test R2 `0.6973`: each OOF base learner sees only four fifths
+  of the stage-3 training population, and the evaluation subsets differ.
+- Tracked summary: `docs/v1_2_42_e_series_oof_summary.md` and
+  `docs/v1_2_42_e_series_validation_metrics.csv`. Remote raw summary:
+  `outputs/experiments/v1_2_42_e_series_summary`.

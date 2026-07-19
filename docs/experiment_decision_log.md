@@ -645,3 +645,25 @@ Direct/Transfer smoke completed, with both validators confirming 2,323 fold-1
 OOF rows and no outer-test rows. Formal screening started at
 2026-07-19T11:03:24+08:00 with three concurrent jobs on the 32 GB RTX 4080
 SUPER. The controller log is `outputs/logs/v1_2_42_e_series.log`.
+
+### v1.2.42 E-series OOF no-winner decision
+
+The 20 screening units completed, but the first summary attempt failed closed
+because 108 identities from the locked v1.2.40 validation set had no paired OOF
+prediction. Raw inspection showed that all 108 belonged to three exact task
+routes that the outer-train-only OOF learners consistently skipped below the
+minimum-support threshold: ECx_Population (32), LOEC_GeneticDamage (38), and
+NOEC_Physiology (38). The summary contract was corrected to exclude only task
+routes absent from the complete paired OOF prediction space, record their IDs,
+hashes and route counts, and continue to fail on a missing identity from any
+OOF-eligible route. This retained 2,325 of 2,433 locked validation identities.
+
+On the retained validation-only set, E0/E1/E2/E3 native mol/kg R2 values were
+0.656425/0.655596/0.656414/0.656228 and MAE values were
+0.582290/0.581000/0.582328/0.580657. E1 and E3 produced negligible MAE gains
+but slightly lower R2, while E2 did not improve either criterion. Therefore no
+candidate met the preregistered simultaneous R2-and-MAE rule. The matrix ended
+with `selected_candidate=null`; expansion seeds 2042 and 8417 were not run and
+the outer test remained unread. The result rejects these prediction-level
+adaptation heads as replacements for the frozen Transfer anchor under the
+current gate, but does not invalidate the v1.2.40 full-fit outer-test result.

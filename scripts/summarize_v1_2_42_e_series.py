@@ -7,6 +7,7 @@ import math
 import re
 import statistics
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -54,7 +55,11 @@ def main() -> None:
         seeds=args.screen_seeds,
         folds=args.folds,
     )
-    selection_ids = load_selection_identities(args.baseline_root, seed=42)
+    requested_selection_rows = load_selection_identity_rows(args.baseline_root, seed=42)
+    selection_ids, selection_eligibility_audit = reconcile_selection_identities(
+        screen_rows,
+        requested_selection_rows=requested_selection_rows,
+    )
     selection, validation_rows, screen_models = select_candidate(
         screen_rows,
         selection_ids=selection_ids,
@@ -68,8 +73,10 @@ def main() -> None:
             "folds": int(args.folds),
             "selection_uses_test": False,
             "selection_identity_source": "v1.2.40_X0_molar_seed42_finetune_mgkg_validation",
+            "selection_identity_requested_n": len(requested_selection_rows),
             "selection_identity_n": len(selection_ids),
             "selection_identity_sha256": stable_hash(selection_ids),
+            **selection_eligibility_audit,
             "outer_test_read": not bool(args.selection_only),
         }
     )
@@ -223,6 +230,7 @@ def read_prediction_rows(path: Path) -> list[dict[str, Any]]:
                     "y_true": required_float(raw.get("y_true"), "y_true"),
                     "y_pred": required_float(raw.get("y_pred"), "y_pred"),
                     "molecular_weight_g_mol_used": mw,
+                    "task_route": prediction_task_route(raw),
                     "task_family": str(raw.get("task_family") or raw.get("base_task_head") or raw.get("task_head") or ""),
                     "taxon_group_l1": str(raw.get("taxon_group_l1") or ""),
                     "effect_level_x": optional_float(raw.get("effect_level_x")),
@@ -233,9 +241,9 @@ def read_prediction_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def load_selection_identities(root: Path, *, seed: int) -> set[str]:
+def load_selection_identity_rows(root: Path, *, seed: int) -> dict[str, dict[str, str]]:
     path = discover_baseline_prediction(root, cell="X0_molar", seed=seed)
-    identities: set[str] = set()
+    identities: dict[str, dict[str, str]] = {}
     with path.open(encoding="utf-8-sig", newline="") as handle:
         for row in csv.DictReader(handle):
             if str(row.get("target_name", "")) != TARGET_NAME:
@@ -245,10 +253,80 @@ def load_selection_identities(root: Path, *, seed: int) -> set[str]:
             identity = str(row.get("aggregate_id", "")).strip()
             if identity in identities:
                 raise ValueError(f"Duplicate selection identity in baseline: {identity}")
-            identities.add(identity)
+            identities[identity] = {
+                "aggregate_id": identity,
+                "task_route": prediction_task_route(row),
+                "task_family": str(
+                    row.get("task_family")
+                    or row.get("base_task_head")
+                    or row.get("task_head")
+                    or ""
+                ),
+            }
     if not identities:
         raise ValueError("The locked v1.2.40 validation identity set is empty.")
     return identities
+
+
+def load_selection_identities(root: Path, *, seed: int) -> set[str]:
+    return set(load_selection_identity_rows(root, seed=seed))
+
+
+def reconcile_selection_identities(
+    oof_rows: Sequence[Mapping[str, Any]],
+    *,
+    requested_selection_rows: Mapping[str, Mapping[str, str]],
+) -> tuple[set[str], dict[str, Any]]:
+    """Restrict the locked validation set only to the paired OOF task space.
+
+    Base learners intentionally drop task routes below the minimum support threshold.
+    A v1.2.40 validation identity from such a route cannot have paired Direct/Transfer
+    OOF predictions.  Those identities are auditable eligibility exclusions; a
+    missing identity from a task family that *is* represented in OOF remains a hard
+    error so data loss cannot be hidden by a generic set intersection.
+    """
+
+    observed_ids = {str(row["aggregate_id"]) for row in oof_rows}
+    observed_task_routes = {str(row.get("task_route") or "") for row in oof_rows}
+    requested_ids = set(requested_selection_rows)
+    missing_ids = requested_ids - observed_ids
+    unexplained = sorted(
+        identity
+        for identity in missing_ids
+        if str(requested_selection_rows[identity].get("task_route") or "")
+        in observed_task_routes
+    )
+    if unexplained:
+        raise ValueError(
+            "Locked selection identities are absent despite an OOF-eligible task route: "
+            f"{unexplained[:5]}"
+        )
+    eligible = requested_ids & observed_ids
+    if not eligible:
+        raise ValueError("No locked validation identities remain in the paired OOF task space.")
+    excluded_by_task = Counter(
+        str(requested_selection_rows[identity].get("task_family") or "<unknown>")
+        for identity in missing_ids
+    )
+    excluded_by_route = Counter(
+        str(requested_selection_rows[identity].get("task_route") or "<unknown>")
+        for identity in missing_ids
+    )
+    return eligible, {
+        "selection_identity_eligibility_rule": (
+            "exclude_only_task_routes_absent_from_complete_paired_oof_predictions"
+        ),
+        "selection_identity_excluded_n": len(missing_ids),
+        "selection_identity_excluded_sha256": stable_hash(missing_ids),
+        "selection_identity_excluded_by_task_family": dict(sorted(excluded_by_task.items())),
+        "selection_identity_excluded_by_task_route": dict(sorted(excluded_by_route.items())),
+    }
+
+
+def prediction_task_route(row: Mapping[str, Any]) -> str:
+    base = str(row.get("base_task_head") or row.get("task_head") or "")
+    target = str(row.get("target_family") or row.get("target_name") or "")
+    return f"{base}__{target}"
 
 
 def select_candidate(
