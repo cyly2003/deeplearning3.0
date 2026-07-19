@@ -1,6 +1,31 @@
 # Project Status
 
-更新时间：2026-07-18 00:40 (+08:00)
+更新时间：2026-07-19 10:20 (+08:00)
+
+## 2026-07-19 v1.2.41 完成，v1.2.42 E 系列 OOF 融合准备启动
+
+- v1.2.41 已以 `[matrix_complete_no_winner]` 结束。两种子固定验证集上，S0 为
+  R2 `0.6907`、MAE `0.5536`；S1/S2/S3 的 R2 分别为 `0.6171/0.6164/0.6175`，
+  MAE 分别为 `0.6339/0.6346/0.6381`。三项均未同时改善 R2 与 MAE，因此没有
+  扩展种子，也没有用测试集挑选候选。
+- 该结果说明当前瓶颈不是 stage 3 轮数不足；将 trunk 从冻结改为全量解冻会明显
+  遗忘前两阶段表征，SWA 与 0.7 Huber + 0.3 MSE 未能修复。后续保留 v1.2.40
+  `X0_molar` 冻结 trunk 的三阶段模型，不再继续同类 full-unfreeze 调参。
+- v1.2.42 E 系列只在已完成的 Direct 与 Transfer 基模型预测上学习轻量组合：
+  E0 为 Transfer ensemble 锚点，E1 为受约束线性融合，E2 为上下文门控，E3 为
+  有界残差头。基模型结构、前两阶段路由、目标尺度和外层 random 8:2 测试集均不变。
+- 元模型采用 5-fold OOF：每个外层 stage-3 训练记录恰好被一个未见过该记录的基模型
+  预测；外层 test 不写入任何 OOF split。每个 OOF 基模型的 early stopping 只使用其
+  训练折内部划分，不能查看 OOF 留出折。
+- 筛选仍使用 seeds `42, 3407`。v1.2.40 seed42 的固定 stage-3 validation identities
+  被保留为选择集，并从元模型拟合行中完全排除；候选必须在该选择集上同时提高 native
+  mol/kg R2 并降低 MAE。只有锁定 winner 后才补跑 seeds `2042, 8417`，用四种子 OOF
+  重新拟合小头，并一次性报告外层 test。
+- 新增：`scripts/build_v1_2_42_e_series_oof_splits.py`、
+  `scripts/run_v1_2_42_e_series_remote.sh`、`scripts/summarize_v1_2_42_e_series.py`、
+  `scripts/validate_v1_2_42_oof_run.py` 和 `qsar_tl/training/meta_ensemble.py`。
+- 本地纯数据/元模型定向测试 `3 passed`；完整训练入口与 shell launcher 将在
+  `qsar-gpu-new` 原镜像环境做 smoke 后再进入 formal。
 
 ## 2026-07-18 v1.2.38 本地土壤 mg/kg 目标尺度补跑完成
 

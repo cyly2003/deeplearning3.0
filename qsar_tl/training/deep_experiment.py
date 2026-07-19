@@ -561,6 +561,7 @@ def run_deep_experiment(
     finetune_mgkg_freeze: str | None = None,
     finetune_mgkg_validation_fraction: float | None = None,
     finetune_mgkg_validation_seed: int | None = None,
+    finetune_mgkg_monitor_split: str | None = None,
     finetune_mgkg_early_stopping: bool | None = None,
     finetune_mgkg_head_only_epochs: int | None = None,
     finetune_mgkg_trunk_learning_rate: float | None = None,
@@ -600,6 +601,7 @@ def run_deep_experiment(
     swa_enabled: bool | None = None,
     swa_start_epoch: int | None = None,
     swa_phase: str | None = None,
+    prediction_split_parts: tuple[str, ...] | None = None,
 ) -> DeepExperimentResult:
     import torch
     from torch.utils.data import DataLoader
@@ -852,7 +854,11 @@ def run_deep_experiment(
                 if finetune_mgkg_validation_fraction is not None
                 else finetune_mgkg_cfg.get("validation_fraction", 0.0)
             ),
-            monitor_split=str(finetune_mgkg_cfg.get("monitor_split", "auto")),
+            monitor_split=str(
+                finetune_mgkg_monitor_split
+                if finetune_mgkg_monitor_split is not None
+                else finetune_mgkg_cfg.get("monitor_split", "auto")
+            ),
         )
     )
     preprocessing_indices = list(actual_train_indices)
@@ -1742,6 +1748,19 @@ def run_deep_experiment(
         num_workers=train_config.num_workers,
         target_scaler=target_scaler,
     )
+    requested_prediction_parts = normalize_prediction_split_parts(prediction_split_parts)
+    if requested_prediction_parts:
+        predictions = [
+            row
+            for row in predictions
+            if str(row.get("split_part", "")).strip().lower()
+            in requested_prediction_parts
+        ]
+        if not predictions:
+            raise ValueError(
+                "prediction_split_parts removed every prediction row: "
+                f"requested={sorted(requested_prediction_parts)}"
+            )
     metrics_rows = metrics_by_group(
         predictions,
         huber_delta=train_config.huber_delta,
@@ -1847,6 +1866,9 @@ def run_deep_experiment(
         "finetune_mgkg_train_rows": len(finetune_mgkg_train_indices),
         "finetune_mgkg_validation_rows": len(finetune_mgkg_validation_indices),
         "finetune_mgkg_validation_source": finetune_mgkg_validation_source,
+        "prediction_output_split_parts": (
+            sorted(requested_prediction_parts) if requested_prediction_parts else ["all"]
+        ),
         "validation_rows": len(validation_indices),
         "validation_source": validation_source,
         "validation_seed": int(seed if validation_seed is None else validation_seed),
@@ -4752,6 +4774,21 @@ def split_finetune_validation_indices(
     if not finetune_train:
         return list(finetune_indices), [], ""
     return finetune_train, sorted(validation), "internal_finetune_fraction" if validation else ""
+
+
+def normalize_prediction_split_parts(
+    split_parts: tuple[str, ...] | None,
+) -> frozenset[str]:
+    if not split_parts:
+        return frozenset()
+    normalized = {
+        str(part).strip().lower()
+        for part in split_parts
+        if str(part).strip()
+    }
+    if not normalized:
+        raise ValueError("prediction_split_parts must include at least one non-empty split label.")
+    return frozenset(normalized)
 
 
 def clone_state_dict(model: Any) -> dict[str, Any]:

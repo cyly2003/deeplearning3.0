@@ -606,3 +606,33 @@ all candidates receive the same 40-epoch budget. A challenger is eligible only
 if its two-seed mean validation native R2 increases and validation native MAE
 decreases relative to S0. The eligible model with the lowest validation MAE is
 locked, then expanded to seeds 2042 and 8417; test metrics are report-only.
+
+### v1.2.41 no-winner result and v1.2.42 E-series OOF decision
+
+The v1.2.41 full-unfreeze screen completed without an eligible winner. On the
+locked two-seed validation identities, S0 achieved native mol/kg R2 0.6907 and
+MAE 0.5536. S1, S2, and S3 achieved R2 0.6171, 0.6164, and 0.6175 and MAE
+0.6339, 0.6346, and 0.6381, respectively. Since every challenger degraded both
+metrics, no expansion run was triggered and the outer test was not used to
+select a configuration. This is evidence of stage-3 catastrophic forgetting
+under full trunk unfreezing, not evidence that the 30-epoch frozen-trunk anchor
+was undertrained.
+
+The next matrix is therefore v1.2.42 E-series. It leaves the Direct and S0
+Transfer base architectures frozen and tests only prediction-level adaptation:
+E0 is the Transfer ensemble anchor; E1 is a constrained Direct-Transfer linear
+blend; E2 is a contextual sigmoid gate using base predictions, disagreement,
+seed dispersion, molecular weight, effect level, task family, and top-level
+taxon; E3 is a small bounded residual head on the same features.
+
+Each base architecture is retrained in five OOF folds inside the locked outer
+stage-3 training population. The outer test is omitted from every OOF split,
+and the OOF held-out fold cannot be used for early stopping: Direct and each
+Transfer stage use only an internal fraction of their current training fold for
+model selection. Seeds 42 and 3407 are used for screening. The fixed v1.2.40
+seed42 stage-3 validation identities form a reserved meta-selection set and are
+excluded from meta fitting. A candidate is eligible only if it improves native
+mol/kg R2 and MAE simultaneously on that reserved set. Only after this lock may
+seeds 2042 and 8417 be generated, the winning head refitted on four-seed OOF
+predictions, and the outer test read once for report-only native mol/kg and
+paired common mg/kg metrics.
