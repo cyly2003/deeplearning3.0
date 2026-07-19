@@ -120,7 +120,6 @@ def make_split_fixture(tmp_path: Path) -> tuple[Path, Path, set[str], set[str], 
     run_dir.mkdir(parents=True)
     fields = [
         "aggregate_id",
-        "record_id",
         "result_ids",
         "split_part",
         "task_head",
@@ -133,7 +132,6 @@ def make_split_fixture(tmp_path: Path) -> tuple[Path, Path, set[str], set[str], 
     with sqlite3.connect(db) as conn:
         baseline_metadata = {
             row[0]: {
-                "record_id": row[1],
                 "result_ids": row[2],
                 "task_head": row[3],
                 "target_name": row[4],

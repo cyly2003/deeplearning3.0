@@ -739,13 +739,24 @@ def load_old_stage3_identities(
                     "Old baseline stage-3 prediction violates the locked soil mol/kg target contract: "
                     f"{identity}"
                 )
-            record_id = str(row.get("record_id", "")).strip()
             task_head = str(row.get("task_head", "")).strip()
-            if not record_id or not task_head:
+            if not task_head:
                 raise ValueError(
                     "Old baseline stage-3 prediction lacks record/task identity: "
                     f"{identity}"
                 )
+            # v1.2.40 prediction exports predate the explicit ``record_id``
+            # column.  The split-assignment identifier is nevertheless fully
+            # deterministic from fields present in every prediction row, so
+            # reconstruct it and compare it against the parent split instead
+            # of weakening the identity audit.
+            exported_record_id = str(row.get("record_id", "")).strip()
+            record_id = exported_record_id or stage_sample_record_id(
+                identity,
+                medium_domain,
+                target_name,
+                target_family,
+            )
             if identity in scientific_by_id:
                 raise ValueError(f"Duplicate old baseline stage-3 identity: {identity}")
             try:
