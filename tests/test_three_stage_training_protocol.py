@@ -38,6 +38,12 @@ def test_g_series_stage3_cli_exposes_sampling_hierarchy_and_checkpoint_controls(
             "stage2.pt",
             "--export-finetune-mgkg-init-checkpoint",
             "export.pt",
+            "--task-filter-min-total",
+            "150",
+            "--task-filter-min-train",
+            "100",
+            "--task-filter-min-eval",
+            "30",
         ]
     )
 
@@ -50,6 +56,9 @@ def test_g_series_stage3_cli_exposes_sampling_hierarchy_and_checkpoint_controls(
     assert args.finetune_mgkg_hierarchical_task_tau == 64
     assert args.finetune_mgkg_init_checkpoint == "stage2.pt"
     assert args.export_finetune_mgkg_init_checkpoint == "export.pt"
+    assert args.task_filter_min_total == 150
+    assert args.task_filter_min_train == 100
+    assert args.task_filter_min_eval == 30
 
 
 def test_staged_training_auto_monitor_isolated_from_finetune_rows() -> None:

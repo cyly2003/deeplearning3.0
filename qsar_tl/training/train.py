@@ -14,6 +14,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", default=None, help="Override derived SQLite database path")
     parser.add_argument("--split-name", default=None, help="Split assignment name")
     parser.add_argument("--source-table", default=None, help="Override modeling source table")
+    parser.add_argument(
+        "--task-filter-min-total",
+        type=int,
+        default=None,
+        help="Override experiment.task_filter.min_total without modifying the base config",
+    )
+    parser.add_argument(
+        "--task-filter-min-train",
+        type=int,
+        default=None,
+        help="Override experiment.task_filter.min_train without modifying the base config",
+    )
+    parser.add_argument(
+        "--task-filter-min-eval",
+        type=int,
+        default=None,
+        help="Override experiment.task_filter.min_eval without modifying the base config",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Override project.seed for reproducible split sampling")
     parser.add_argument("--limit", type=int, default=None, help="Optional row limit for smoke training")
     parser.add_argument("--epochs", type=int, default=None, help="Override training epochs")
@@ -217,6 +235,20 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     config = load_config(args.config)
+    task_filter_overrides = {
+        "min_total": args.task_filter_min_total,
+        "min_train": args.task_filter_min_train,
+        "min_eval": args.task_filter_min_eval,
+    }
+    if any(value is not None for value in task_filter_overrides.values()):
+        config = dict(config)
+        experiment_cfg = dict(config.get("experiment", {}))
+        task_filter_cfg = dict(experiment_cfg.get("task_filter", {}))
+        task_filter_cfg.update(
+            {key: int(value) for key, value in task_filter_overrides.items() if value is not None}
+        )
+        experiment_cfg["task_filter"] = task_filter_cfg
+        config["experiment"] = experiment_cfg
     if args.medium_adapters is not None:
         config = dict(config)
         model_cfg = dict(config.get("model", {}))

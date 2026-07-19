@@ -2201,6 +2201,11 @@ def run_deep_experiment(
         ),
         "task_heads": list(task_heads),
         "skipped_tasks": skipped_tasks,
+        "task_filter": {
+            "min_total": min_total,
+            "min_train": min_train,
+            "min_eval": min_eval,
+        },
         "fingerprint_size": fingerprint_size,
         "encoder_source": encoder.source,
         "molecular_descriptor_names": list(descriptor_names),

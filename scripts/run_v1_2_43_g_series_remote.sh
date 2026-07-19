@@ -23,6 +23,13 @@ SUMMARY_DIR="${SUMMARY_DIR:-outputs/experiments/v1_2_43_g_series_summary}"
 AUDIT_DIR="outputs/audits/v1_2_43_g_series"
 CACHE_ROOT="${CACHE_ROOT:-outputs/cache/v1_2_43_g_stage2_init}"
 PARALLEL_JOBS="${PARALLEL_JOBS:-2}"
+# Keep the original 100/30 train/evaluation safeguards, while admitting task
+# routes with 150--199 visible records. This keeps the three screen-only soil
+# routes (158, 190, and 191 records after final-test withholding) trainable
+# without broadly admitting sparse heads.
+TASK_FILTER_MIN_TOTAL="${TASK_FILTER_MIN_TOTAL:-150}"
+TASK_FILTER_MIN_TRAIN="${TASK_FILTER_MIN_TRAIN:-100}"
+TASK_FILTER_MIN_EVAL="${TASK_FILTER_MIN_EVAL:-30}"
 SCREEN_SEEDS=(42 3407)
 FINAL_SEEDS=(42 2042 3407 8417)
 CANDIDATES=(G0 G1 G2 G3)
@@ -191,6 +198,9 @@ run_cell() {
     --run-name-zh "$run_name" \
     --source-table "$SOURCE_TABLE" \
     --split-name "$split" \
+    --task-filter-min-total "$TASK_FILTER_MIN_TOTAL" \
+    --task-filter-min-train "$TASK_FILTER_MIN_TRAIN" \
+    --task-filter-min-eval "$TASK_FILTER_MIN_EVAL" \
     --seed "$seed" \
     --epochs "$STAGE1_EPOCHS" \
     --finetune-epochs "$STAGE2_EPOCHS" \

@@ -994,3 +994,7 @@ def test_runner_keeps_g3_as_hierarchy_only() -> None:
     before_lock, after_lock = runner.split("[winner_locked]", 1)
     assert "build_split final" not in before_lock
     assert "build_split final" in after_lock
+    assert 'TASK_FILTER_MIN_TOTAL="${TASK_FILTER_MIN_TOTAL:-150}"' in runner
+    assert '--task-filter-min-total "$TASK_FILTER_MIN_TOTAL"' in runner
+    assert '--task-filter-min-train "$TASK_FILTER_MIN_TRAIN"' in runner
+    assert '--task-filter-min-eval "$TASK_FILTER_MIN_EVAL"' in runner
