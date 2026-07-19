@@ -998,3 +998,5 @@ def test_runner_keeps_g3_as_hierarchy_only() -> None:
     assert '--task-filter-min-total "$TASK_FILTER_MIN_TOTAL"' in runner
     assert '--task-filter-min-train "$TASK_FILTER_MIN_TRAIN"' in runner
     assert '--task-filter-min-eval "$TASK_FILTER_MIN_EVAL"' in runner
+    assert 'SCREEN_CHALLENGERS=(G1 G3)' in runner
+    assert 'SCREEN_CHALLENGERS=(G1 G2 G3)' in runner

@@ -297,7 +297,14 @@ run_batch() {
 # G0 creates the same-seed stage-2 cache first. Every challenger then starts
 # from that exact cache, isolating only its stage-3 intervention.
 run_batch screen G0 "${ACTIVE_SCREEN_SEEDS[@]}"
-for candidate in G1 G2 G3; do
+if [[ "$MODE" == "smoke" ]]; then
+  # Smoke proves the cold G0 export plus both warm-cache paths required to
+  # launch the matrix; G2 differs from G1 only by its loss mixture.
+  SCREEN_CHALLENGERS=(G1 G3)
+else
+  SCREEN_CHALLENGERS=(G1 G2 G3)
+fi
+for candidate in "${SCREEN_CHALLENGERS[@]}"; do
   run_batch screen "$candidate" "${ACTIVE_SCREEN_SEEDS[@]}"
 done
 
