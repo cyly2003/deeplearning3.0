@@ -2,7 +2,7 @@
 
 更新时间：2026-07-19 10:20 (+08:00)
 
-## 2026-07-19 v1.2.41 完成，v1.2.42 E 系列 OOF 融合准备启动
+## 2026-07-19 v1.2.41 完成，v1.2.42 E 系列 OOF 融合已启动
 
 - v1.2.41 已以 `[matrix_complete_no_winner]` 结束。两种子固定验证集上，S0 为
   R2 `0.6907`、MAE `0.5536`；S1/S2/S3 的 R2 分别为 `0.6171/0.6164/0.6175`，
@@ -24,8 +24,14 @@
 - 新增：`scripts/build_v1_2_42_e_series_oof_splits.py`、
   `scripts/run_v1_2_42_e_series_remote.sh`、`scripts/summarize_v1_2_42_e_series.py`、
   `scripts/validate_v1_2_42_oof_run.py` 和 `qsar_tl/training/meta_ensemble.py`。
-- 本地纯数据/元模型定向测试 `3 passed`；完整训练入口与 shell launcher 将在
-  `qsar-gpu-new` 原镜像环境做 smoke 后再进入 formal。
+- 本地纯数据/元模型定向测试 `3 passed`；远端原镜像相关协议测试 `15 passed`。
+  第一次 smoke 暴露 OOF stage-3 `group_key` 未保持严格契约，已修复并补充测试；
+  第二次 Direct/Transfer smoke 均通过，各输出并验证 `2,323` 条 fold1 OOF 预测，
+  总耗时约 `6m54s`。
+- formal 于 `2026-07-19T11:03:24+08:00` 启动，RTX 4080 SUPER 32 GB 使用
+  `PARALLEL_JOBS=3`。筛选共 20 个 base OOF 单元（2 architectures × 2 seeds ×
+  5 folds），预计约 2 小时；若存在 winner，再补 20 个扩展单元，预计总计约 4 小时。
+  控制日志：`outputs/logs/v1_2_42_e_series.log`。
 
 ## 2026-07-18 v1.2.38 本地土壤 mg/kg 目标尺度补跑完成
 

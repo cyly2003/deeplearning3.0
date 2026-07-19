@@ -636,3 +636,12 @@ mol/kg R2 and MAE simultaneously on that reserved set. Only after this lock may
 seeds 2042 and 8417 be generated, the winning head refitted on four-seed OOF
 predictions, and the outer test read once for report-only native mol/kg and
 paired common mg/kg metrics.
+
+Remote QA and launch: the related remote protocol suite passed 15 tests. The
+first smoke run failed closed before training because stage-3 OOF assignments
+did not retain the strict group-key contract; the split builder was corrected
+to emit strict contracts and the regression test was expanded. The second
+Direct/Transfer smoke completed, with both validators confirming 2,323 fold-1
+OOF rows and no outer-test rows. Formal screening started at
+2026-07-19T11:03:24+08:00 with three concurrent jobs on the 32 GB RTX 4080
+SUPER. The controller log is `outputs/logs/v1_2_42_e_series.log`.
