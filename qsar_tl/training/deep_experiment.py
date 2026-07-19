@@ -8,7 +8,7 @@ import os
 import sqlite3
 from collections import Counter
 from contextlib import closing
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -568,6 +568,15 @@ def run_deep_experiment(
     finetune_mgkg_replay_fraction: float | None = None,
     finetune_mgkg_toxicity_bin_loss_weight: float | None = None,
     finetune_mgkg_mse_loss_weight: float | None = None,
+    finetune_mgkg_target_bin_sampling: bool | None = None,
+    finetune_mgkg_target_bins: int | None = None,
+    finetune_mgkg_sampling_min_weight: float | None = None,
+    finetune_mgkg_sampling_max_weight: float | None = None,
+    finetune_mgkg_hierarchical_head: bool | None = None,
+    finetune_mgkg_hierarchical_family_tau: float | None = None,
+    finetune_mgkg_hierarchical_task_tau: float | None = None,
+    finetune_mgkg_init_checkpoint: str | Path | None = None,
+    export_finetune_mgkg_init_checkpoint: str | Path | None = None,
     mgkg_residual_adapter: bool | None = None,
     mgkg_residual_adapter_bottleneck: int | None = None,
     head_routing: str | None = None,
@@ -767,6 +776,60 @@ def run_deep_experiment(
         raise ValueError("finetune_mgkg soil_ptox_replay_fraction must be in [0, 0.5].")
     if finetune_mgkg_replay_ratio > 0 and head_routing_mode != "task_target":
         raise ValueError("Soil pTox replay requires task_target head routing.")
+    target_bin_sampling_enabled = bool(
+        finetune_mgkg_target_bin_sampling
+        if finetune_mgkg_target_bin_sampling is not None
+        else finetune_mgkg_cfg.get("target_bin_sampling", False)
+    )
+    target_bin_sampling_bins = int(
+        finetune_mgkg_target_bins
+        if finetune_mgkg_target_bins is not None
+        else finetune_mgkg_cfg.get("target_bins", 10)
+    )
+    target_bin_sampling_min_weight = float(
+        finetune_mgkg_sampling_min_weight
+        if finetune_mgkg_sampling_min_weight is not None
+        else finetune_mgkg_cfg.get("target_bin_sampling_min_weight", 0.5)
+    )
+    target_bin_sampling_max_weight = float(
+        finetune_mgkg_sampling_max_weight
+        if finetune_mgkg_sampling_max_weight is not None
+        else finetune_mgkg_cfg.get("target_bin_sampling_max_weight", 2.0)
+    )
+    if target_bin_sampling_bins < 2:
+        raise ValueError("finetune_mgkg target_bins must be at least 2.")
+    if not (
+        0 < target_bin_sampling_min_weight
+        <= 1.0
+        <= target_bin_sampling_max_weight
+    ):
+        raise ValueError(
+            "finetune_mgkg target-bin sampling weights require 0 < min <= 1 <= max "
+            "so each task's expected sampling mass can remain unchanged."
+        )
+    if target_bin_sampling_enabled and finetune_mgkg_replay_ratio > 0:
+        raise ValueError(
+            "Stage-3 equal-width target-bin sampling cannot be combined with soil pTox replay."
+        )
+    hierarchical_head_enabled = bool(
+        finetune_mgkg_hierarchical_head
+        if finetune_mgkg_hierarchical_head is not None
+        else finetune_mgkg_cfg.get("hierarchical_head", False)
+    )
+    hierarchical_family_tau = float(
+        finetune_mgkg_hierarchical_family_tau
+        if finetune_mgkg_hierarchical_family_tau is not None
+        else finetune_mgkg_cfg.get("hierarchical_family_tau", 128.0)
+    )
+    hierarchical_task_tau = float(
+        finetune_mgkg_hierarchical_task_tau
+        if finetune_mgkg_hierarchical_task_tau is not None
+        else finetune_mgkg_cfg.get("hierarchical_task_tau", 64.0)
+    )
+    if hierarchical_family_tau < 0 or hierarchical_task_tau < 0:
+        raise ValueError("Hierarchical residual-scale tau values must be non-negative.")
+    if hierarchical_head_enabled and finetune_mgkg_replay_ratio > 0:
+        raise ValueError("The hierarchical soil head cannot be combined with pTox replay.")
     model_cfg = config.get("model", {}) if isinstance(config.get("model", {}), dict) else {}
     use_mgkg_residual_adapter = bool(
         mgkg_residual_adapter
@@ -990,6 +1053,16 @@ def run_deep_experiment(
         source_weighting_summary,
         effect_level_weighting_summary,
     )
+    target_bin_sampling_weights, target_bin_sampling_audit = (
+        build_task_equal_width_target_bin_sampling_spec(
+            samples,
+            train_indices=finetune_mgkg_train_indices,
+            enabled=target_bin_sampling_enabled,
+            bins=target_bin_sampling_bins,
+            min_weight=target_bin_sampling_min_weight,
+            max_weight=target_bin_sampling_max_weight,
+        )
+    )
     toxicity_binning_summary = summarize_toxicity_bins(samples, toxicity_binning_cfg, toxicity_bin_count)
     dataset = AggregatedTaskDataset(samples=samples, fingerprint_size=fingerprint_size)
 
@@ -1003,6 +1076,13 @@ def run_deep_experiment(
     )
     validation_dataset = _IndexDataset(dataset, validation_indices) if validation_indices else None
     task_heads = dataset.task_heads()
+    hierarchical_head_spec = build_mgkg_hierarchical_head_spec(
+        samples,
+        train_indices=finetune_mgkg_train_indices,
+        enabled=hierarchical_head_enabled,
+        family_tau=hierarchical_family_tau,
+        task_tau=hierarchical_task_tau,
+    )
     mgkg_adapter_heads = tuple(
         sorted(
             {
@@ -1038,35 +1118,44 @@ def run_deep_experiment(
     # paired shared-parameter initialization. A second reset below keeps data
     # loader randomness invariant to optional architecture modules.
     set_torch_seed(seed)
-    model = EcotoxMultiTaskNetwork(
-        DeepModelConfig(
-            numeric_dim=dataset.numeric_dim(),
-            fingerprint_dim=dataset.fingerprint_dim(),
-            categorical_cardinalities=categorical_cardinalities,
-            adapter_count=max(adapter_map.values(), default=0) + 1 if adapter_map else 0,
-            effect_level_numeric_indices=effect_level_feature_indices(numeric_feature_names),
-            descriptor_count=descriptor_count,
-            descriptor_encoder_mode=descriptor_encoder_cfg["mode"],
-            descriptor_head_dim=descriptor_encoder_cfg["head_dim"],
-            descriptor_group_head_dim=descriptor_encoder_cfg["group_head_dim"],
-            descriptor_group_indices=descriptor_encoder_cfg["group_indices"],
-            graph_atom_feature_dim=0 if graph_encoder is None else graph_encoder.atom_feature_dim,
-            graph_edge_feature_dim=0 if graph_encoder is None else graph_encoder.edge_feature_dim,
-            graph_embedding_dim=0 if graph_encoder is None else graph_encoder_cfg["embedding_dim"],
-            graph_message_steps=graph_encoder_cfg["message_steps"],
-            task_heads=task_heads,
-            hidden_dims=_hidden_dims(config),
-            dropout=float(dropout if dropout is not None else config.get("model", {}).get("dropout", 0.15)),
-            use_molecular_residual=ablation_spec.use_molecular_residual,
-            use_adapters=ablation_spec.use_medium_adapter,
-            toxicity_bin_count=toxicity_bin_count,
-            toxicity_binning_mode=toxicity_binning_cfg.mode if toxicity_binning_cfg.enabled else "none",
-            use_mgkg_residual_adapter=use_mgkg_residual_adapter,
-            mgkg_residual_adapter_bottleneck=mgkg_adapter_bottleneck,
-            mgkg_residual_adapter_heads=mgkg_adapter_heads,
-        )
+    hidden_dims = _hidden_dims(config)
+    deep_model_config = DeepModelConfig(
+        numeric_dim=dataset.numeric_dim(),
+        fingerprint_dim=dataset.fingerprint_dim(),
+        categorical_cardinalities=categorical_cardinalities,
+        adapter_count=max(adapter_map.values(), default=0) + 1 if adapter_map else 0,
+        effect_level_numeric_indices=effect_level_feature_indices(numeric_feature_names),
+        descriptor_count=descriptor_count,
+        descriptor_encoder_mode=descriptor_encoder_cfg["mode"],
+        descriptor_head_dim=descriptor_encoder_cfg["head_dim"],
+        descriptor_group_head_dim=descriptor_encoder_cfg["group_head_dim"],
+        descriptor_group_indices=descriptor_encoder_cfg["group_indices"],
+        graph_atom_feature_dim=0 if graph_encoder is None else graph_encoder.atom_feature_dim,
+        graph_edge_feature_dim=0 if graph_encoder is None else graph_encoder.edge_feature_dim,
+        graph_embedding_dim=0 if graph_encoder is None else graph_encoder_cfg["embedding_dim"],
+        graph_message_steps=graph_encoder_cfg["message_steps"],
+        task_heads=task_heads,
+        hidden_dims=hidden_dims,
+        dropout=float(
+            dropout
+            if dropout is not None
+            else config.get("model", {}).get("dropout", 0.15)
+        ),
+        use_molecular_residual=ablation_spec.use_molecular_residual,
+        use_adapters=ablation_spec.use_medium_adapter,
+        toxicity_bin_count=toxicity_bin_count,
+        toxicity_binning_mode=(
+            toxicity_binning_cfg.mode if toxicity_binning_cfg.enabled else "none"
+        ),
+        use_mgkg_residual_adapter=use_mgkg_residual_adapter,
+        mgkg_residual_adapter_bottleneck=mgkg_adapter_bottleneck,
+        mgkg_residual_adapter_heads=mgkg_adapter_heads,
+        mgkg_hierarchical_heads=tuple(hierarchical_head_spec["heads"]),
+        mgkg_hierarchical_head_families=hierarchical_head_spec["head_families"],
+        mgkg_hierarchical_family_scales=hierarchical_head_spec["family_scales"],
+        mgkg_hierarchical_task_scales=hierarchical_head_spec["task_scales"],
     )
-
+    model = EcotoxMultiTaskNetwork(deep_model_config)
     loss_cfg = train_cfg.get("loss", {}) if isinstance(train_cfg.get("loss", {}), dict) else {}
     task_weights = resolve_task_weights(
         samples,
@@ -1159,10 +1248,188 @@ def run_deep_experiment(
         censored_loss_weight=train_config.censored_loss_weight,
         censored_loss_margin=train_config.censored_loss_margin,
     )
+    checkpoint_preprocessing = build_preprocessing_manifest(
+        categorical_maps=categorical_maps,
+        adapter_map=adapter_map,
+        numeric_stats=numeric_stats,
+        ablation=ablation_spec,
+        fingerprint_size=fingerprint_size,
+        encoder_source=encoder.source,
+        cache_path=cache_path,
+        descriptor_count=descriptor_count,
+        descriptor_names=descriptor_names,
+        descriptor_encoder=descriptor_encoder_cfg["manifest"],
+        graph_encoder=(
+            {}
+            if graph_encoder is None
+            else {**graph_encoder.to_manifest(), **graph_encoder_cfg}
+        ),
+        target_scaler=target_scaler,
+        zscore_correction=zscore_correction,
+        categorical_min_count=category_min_count,
+    )
+    base_architecture = asdict(deep_model_config)
+    for hierarchy_key in (
+        "mgkg_hierarchical_heads",
+        "mgkg_hierarchical_head_families",
+        "mgkg_hierarchical_family_scales",
+        "mgkg_hierarchical_task_scales",
+    ):
+        base_architecture.pop(hierarchy_key, None)
+    finetune_mgkg_checkpoint_contract = stage3_init_checkpoint_contract(
+        data_identity={
+            **database_source_identity(
+                db_path,
+                source_table=str(
+                    source_table or split_join_audit.get("source_table", "")
+                ),
+                split_name=split_name,
+            ),
+            "split_join_audit": split_join_audit,
+            "all_split_scientific_identity_sha256": sample_scientific_identity_sha256(
+                samples, list(range(len(samples))), include_split_part=True
+            ),
+        },
+        preprocessing={
+            "manifest": checkpoint_preprocessing,
+            "categorical_maps_sha256": canonical_sha256(categorical_maps),
+            "numeric_feature_names_sha256": canonical_sha256(
+                list(numeric_feature_names)
+            ),
+            "preprocessing_fit_samples": sample_indices_contract(
+                samples, preprocessing_indices
+            ),
+        },
+        base_architecture={
+            "head_routing": head_routing_mode,
+            "ablation": asdict(ablation_spec),
+            "model_config_without_g3_hierarchy": base_architecture,
+            "runtime_code_identity": stage12_runtime_code_identity(),
+            "descriptor_encoder": descriptor_encoder_cfg,
+            "graph_encoder": (
+                {}
+                if graph_encoder is None
+                else {**graph_encoder.to_manifest(), **graph_encoder_cfg}
+            ),
+        },
+        weighting_and_auxiliary={
+            "task_weighting": str(train_cfg.get("task_weighting", "balanced")),
+            "task_weights": task_weights,
+            # Cache provenance remains available in the experiment manifest,
+            # but a cold computation and a warm cache replay must describe the
+            # same scientific stage-1/2 initialization contract.
+            "source_weighting": scientific_summary_contract(
+                source_weighting_summary
+            ),
+            "effect_level_weighting": scientific_summary_contract(
+                effect_level_weighting_summary
+            ),
+            "actual_training_sample_weights": {
+                "stage1": sample_weight_identity_contract(
+                    samples, actual_train_indices
+                ),
+                "stage2": sample_weight_identity_contract(
+                    samples, finetune_train_indices
+                ),
+            },
+            "toxicity_binning_config": toxicity_binning_cfg.to_manifest(),
+            "toxicity_binning_scheme": toxicity_bin_scheme,
+            "toxicity_binning_summary": scientific_summary_contract(
+                toxicity_binning_summary
+            ),
+            "censored_loss": scientific_summary_contract(censored_summary),
+            "domain_alignment": domain_alignment_cfg.to_manifest(),
+        },
+        stage12_protocol={
+            "seed": int(seed),
+            "stage1": {
+                "training_config": asdict(train_config),
+                "early_stopping": {
+                    **early_cfg,
+                    "enabled_effective": early_enabled,
+                    "validation_source": validation_source,
+                    "validation_seed": int(
+                        seed if validation_seed is None else validation_seed
+                    ),
+                },
+                "train_samples": sample_indices_contract(
+                    samples, actual_train_indices
+                ),
+                "validation_samples": sample_indices_contract(
+                    samples, validation_indices
+                ),
+            },
+            "stage2": {
+                "training_config": asdict(finetune_config),
+                "freeze": finetune_freeze_mode,
+                "early_stopping": {
+                    "enabled_effective": bool(
+                        finetune_validation_indices
+                        and finetune_cfg.get("early_stopping", True)
+                    ),
+                    "patience": int(
+                        finetune_cfg.get(
+                            "early_stopping_patience", early_cfg["patience"]
+                        )
+                    ),
+                    "min_delta": float(
+                        finetune_cfg.get(
+                            "early_stopping_min_delta", early_cfg["min_delta"]
+                        )
+                    ),
+                    "validation_source": finetune_validation_source,
+                    "validation_seed": int(
+                        seed
+                        if finetune_validation_seed is None
+                        else finetune_validation_seed
+                    ),
+                    "validation_fraction": float(
+                        finetune_validation_fraction
+                        if finetune_validation_fraction is not None
+                        else finetune_cfg.get("validation_fraction", 0.0)
+                    ),
+                    "monitor_split": str(
+                        finetune_cfg.get("monitor_split", "auto")
+                    ),
+                },
+                "train_samples": sample_indices_contract(
+                    samples, finetune_train_indices
+                ),
+                "validation_samples": sample_indices_contract(
+                    samples, finetune_validation_indices
+                ),
+            },
+            "swa": swa_cfg.to_manifest(),
+            "augmentation": augmentation_cfg.to_manifest(),
+        },
+    )
 
     set_torch_seed(seed)
     torch_device = torch.device(train_config.device)
     model.to(torch_device)
+    finetune_mgkg_checkpoint_audit: dict[str, Any] = {
+        "format": "qsar_stage3_init_v1",
+        "contract_sha256": finetune_mgkg_checkpoint_contract["sha256"],
+        "contract_schema_version": int(
+            finetune_mgkg_checkpoint_contract.get("schema_version", 0)
+        ),
+        "contract_hash_recomputed": True,
+        "loaded": False,
+        "exported": False,
+        "stage1_stage2_skipped": False,
+    }
+    finetune_mgkg_checkpoint_loaded = False
+    if finetune_mgkg_init_checkpoint is not None:
+        load_audit = load_stage3_init_checkpoint(
+            model,
+            finetune_mgkg_init_checkpoint,
+            expected_contract=finetune_mgkg_checkpoint_contract,
+            reset_hierarchical_heads=tuple(hierarchical_head_spec["heads"]),
+        )
+        finetune_mgkg_checkpoint_audit.update(load_audit)
+        finetune_mgkg_checkpoint_audit["stage1_stage2_skipped"] = True
+        finetune_mgkg_checkpoint_loaded = True
+        model.to(torch_device)
     optimizer = build_optimizer(model.parameters(), train_config)
     scheduler = build_scheduler(optimizer, train_config, train_config.epochs)
     loss_fn = build_regression_loss(train_config)
@@ -1220,9 +1487,12 @@ def run_deep_experiment(
     history = []
     best_epoch = 0
     best_monitor_loss = float("inf")
-    best_state: dict[str, Any] | None = None
+    best_state: dict[str, Any] | None = (
+        clone_state_dict(model) if finetune_mgkg_checkpoint_loaded else None
+    )
     no_improve_epochs = 0
-    for epoch in range(1, train_config.epochs + 1):
+    pretrain_epochs = 0 if finetune_mgkg_checkpoint_loaded else train_config.epochs
+    for epoch in range(1, pretrain_epochs + 1):
         epoch_loss = train_one_epoch(
             model,
             dataloader,
@@ -1308,7 +1578,11 @@ def run_deep_experiment(
     )
     finetune_patience = int(finetune_cfg.get("early_stopping_patience", early_cfg["patience"]))
     finetune_min_delta = float(finetune_cfg.get("early_stopping_min_delta", early_cfg["min_delta"]))
-    if finetune_requested and finetune_train_indices:
+    if (
+        not finetune_mgkg_checkpoint_loaded
+        and finetune_requested
+        and finetune_train_indices
+    ):
         trainable_parameters = apply_finetune_freeze(model, finetune_freeze_mode)
         finetune_dataset = build_noisy_index_dataset(
             dataset,
@@ -1453,6 +1727,22 @@ def run_deep_experiment(
         if finetune_best_state is not None:
             model.load_state_dict(finetune_best_state)
 
+    if export_finetune_mgkg_init_checkpoint is not None:
+        if (
+            not finetune_mgkg_checkpoint_loaded
+            and not (finetune_requested and finetune_train_indices)
+        ):
+            raise ValueError(
+                "Exporting a stage-3 init checkpoint requires a completed stage-2 "
+                "finetune phase or an already validated stage-3 init checkpoint."
+            )
+        export_audit = export_stage3_init_checkpoint(
+            model,
+            export_finetune_mgkg_init_checkpoint,
+            contract=finetune_mgkg_checkpoint_contract,
+        )
+        finetune_mgkg_checkpoint_audit.update(export_audit)
+
     finetune_mgkg_ran = 0
     finetune_mgkg_best_epoch = 0
     finetune_mgkg_best_monitor_loss = float("inf")
@@ -1513,10 +1803,34 @@ def run_deep_experiment(
             finetune_mgkg_replay_dataset,
         )
         finetune_mgkg_target_samples = finetune_mgkg_pool_dataset.target_count
+        finetune_mgkg_weighted_sampler = None
+        if target_bin_sampling_enabled:
+            from torch.utils.data import WeightedRandomSampler
+
+            expanded_sampling_weights = sampling_weights_for_stage_dataset(
+                finetune_mgkg_target_dataset,
+                source_weights=target_bin_sampling_weights,
+            )
+            sampling_generator = torch.Generator()
+            sampling_generator.manual_seed(int(seed) + 510_031)
+            finetune_mgkg_weighted_sampler = WeightedRandomSampler(
+                weights=torch.as_tensor(expanded_sampling_weights, dtype=torch.double),
+                num_samples=len(finetune_mgkg_target_dataset),
+                replacement=True,
+                generator=sampling_generator,
+            )
+            target_bin_sampling_audit["sampler_seed"] = int(seed) + 510_031
+            target_bin_sampling_audit["samples_per_epoch"] = int(
+                len(finetune_mgkg_target_dataset)
+            )
+            target_bin_sampling_audit["augmentation_replicates"] = int(
+                augmentation_cfg.finetune_replicates
+            )
         finetune_mgkg_target_loader = DataLoader(
             finetune_mgkg_target_dataset,
             batch_size=finetune_mgkg_config.batch_size,
-            shuffle=True,
+            shuffle=finetune_mgkg_weighted_sampler is None,
+            sampler=finetune_mgkg_weighted_sampler,
             collate_fn=collate_aggregated_task_batch,
             **dataloader_runtime_options(torch_device, finetune_mgkg_config.num_workers),
         )
@@ -1739,28 +2053,33 @@ def run_deep_experiment(
         best_epoch = swa_last_global_epoch or best_epoch
         swa_applied = True
 
+    requested_prediction_parts = normalize_prediction_split_parts(prediction_split_parts)
+    prediction_indices = (
+        [
+            index
+            for index, sample in enumerate(samples)
+            if str(sample.get("split_part", "")).strip().lower()
+            in requested_prediction_parts
+        ]
+        if requested_prediction_parts
+        else list(range(len(samples)))
+    )
+    if not prediction_indices:
+        raise ValueError(
+            "prediction_split_parts selected no rows before model inference: "
+            f"requested={sorted(requested_prediction_parts)}"
+        )
+    prediction_dataset = _IndexDataset(dataset, prediction_indices)
+    prediction_samples = [samples[index] for index in prediction_indices]
     predictions = predict_all(
         model,
-        dataset,
-        samples,
+        prediction_dataset,
+        prediction_samples,
         batch_size=train_config.batch_size,
         device=torch_device,
         num_workers=train_config.num_workers,
         target_scaler=target_scaler,
     )
-    requested_prediction_parts = normalize_prediction_split_parts(prediction_split_parts)
-    if requested_prediction_parts:
-        predictions = [
-            row
-            for row in predictions
-            if str(row.get("split_part", "")).strip().lower()
-            in requested_prediction_parts
-        ]
-        if not predictions:
-            raise ValueError(
-                "prediction_split_parts removed every prediction row: "
-                f"requested={sorted(requested_prediction_parts)}"
-            )
     metrics_rows = metrics_by_group(
         predictions,
         huber_delta=train_config.huber_delta,
@@ -1846,7 +2165,7 @@ def run_deep_experiment(
     else:
         best_model_path = None
     manifest = {
-        "architecture_schema_version": 2,
+        "architecture_schema_version": 3,
         "seed": seed,
         "split_name": split_name,
         "data_source": {
@@ -2018,6 +2337,9 @@ def run_deep_experiment(
                 "huber_delta": finetune_mgkg_config.huber_delta,
                 "mse_weight": finetune_mgkg_config.mse_loss_weight,
             },
+            "target_bin_sampling": target_bin_sampling_audit,
+            "hierarchical_head": hierarchical_head_spec,
+            "stage3_init_checkpoint": finetune_mgkg_checkpoint_audit,
             "soil_ptox_replay_boundary_audit": finetune_mgkg_replay_audit,
         },
         "mgkg_residual_adapter": {
@@ -2051,22 +2373,7 @@ def run_deep_experiment(
             "masked_descriptor_names": list(ablation_spec.masked_descriptor_names),
         },
     }
-    preprocessing = build_preprocessing_manifest(
-        categorical_maps=categorical_maps,
-        adapter_map=adapter_map,
-        numeric_stats=numeric_stats,
-        ablation=ablation_spec,
-        fingerprint_size=fingerprint_size,
-        encoder_source=encoder.source,
-        cache_path=cache_path,
-        descriptor_count=descriptor_count,
-        descriptor_names=descriptor_names,
-        descriptor_encoder=descriptor_encoder_cfg["manifest"],
-        graph_encoder={} if graph_encoder is None else {**graph_encoder.to_manifest(), **graph_encoder_cfg},
-        target_scaler=target_scaler,
-        zscore_correction=zscore_correction,
-        categorical_min_count=category_min_count,
-    )
+    preprocessing = checkpoint_preprocessing
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     preprocessing_path.write_text(json.dumps(preprocessing, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -2329,15 +2636,15 @@ def apply_finetune_freeze(model: Any, mode: str) -> list[Any]:
 
     residual_adapter = getattr(model, "mgkg_residual_adapter", None)
     if normalized == "heads_only":
-        modules = [model.heads]
+        modules = model_head_modules(model)
         if residual_adapter is not None:
             modules.append(residual_adapter)
     elif normalized == "last_trunk":
-        modules = [model.heads, _last_parameterized_trunk_module(model)]
+        modules = [*model_head_modules(model), _last_parameterized_trunk_module(model)]
         if residual_adapter is not None:
             modules.append(residual_adapter)
     elif normalized == "heads_embeddings":
-        modules = [model.heads, model.embeddings, model.adapters]
+        modules = [*model_head_modules(model), model.embeddings, model.adapters]
         if residual_adapter is not None:
             modules.append(residual_adapter)
     else:
@@ -2352,6 +2659,19 @@ def apply_finetune_freeze(model: Any, mode: str) -> list[Any]:
     if not trainable:
         raise ValueError(f"No trainable parameters for finetune freeze mode '{mode}'.")
     return trainable
+
+
+def model_head_modules(model: Any) -> list[Any]:
+    """Return every prediction-head module, including optional stage-3 heads."""
+
+    modules = [model.heads]
+    hierarchical_shared = getattr(model, "mgkg_hierarchical_shared_head", None)
+    if hierarchical_shared is not None:
+        modules.append(hierarchical_shared)
+    hierarchical_families = getattr(model, "mgkg_hierarchical_family_heads", None)
+    if hierarchical_families is not None:
+        modules.append(hierarchical_families)
+    return modules
 
 
 def _last_parameterized_trunk_module(model: Any) -> Any:
@@ -2381,7 +2701,11 @@ def build_finetune_parameter_groups(
     if trunk_learning_rate <= 0:
         return trainable
 
-    head_parameter_ids = {id(parameter) for parameter in model.heads.parameters()}
+    head_parameter_ids = {
+        id(parameter)
+        for module in model_head_modules(model)
+        for parameter in module.parameters()
+    }
     residual_adapter = getattr(model, "mgkg_residual_adapter", None)
     if residual_adapter is not None:
         head_parameter_ids.update(id(parameter) for parameter in residual_adapter.parameters())
@@ -3434,6 +3758,276 @@ def _target_stats(values: list[float]) -> dict[str, float]:
         "min": float(np.min(finite)),
         "max": float(np.max(finite)),
     }
+
+
+def build_mgkg_hierarchical_head_spec(
+    samples: list[dict[str, Any]],
+    *,
+    train_indices: list[int],
+    enabled: bool,
+    family_tau: float,
+    task_tau: float,
+) -> dict[str, Any]:
+    """Build a train-only hierarchy for native soil mol/kg task heads."""
+
+    empty = {
+        "enabled": False,
+        "kind": "shared_plus_task_family_plus_exact_task_residual",
+        "target_family": "solid_neglog_mol_kg",
+        "heads": [],
+        "head_families": {},
+        "family_labels": {},
+        "family_counts": {},
+        "task_counts": {},
+        "family_scales": {},
+        "task_scales": {},
+        "family_tau": float(family_tau),
+        "task_tau": float(task_tau),
+        "count_source": "finetune_mgkg_training_only",
+        "train_identity_sha256": sample_indices_sha256(samples, train_indices),
+        "non_train_rows_used": 0,
+        "residual_contribution_scale_formula": "alpha=n/(n+tau)",
+        "scale_interpretation": "effective_initial_regularization_not_a_hard_constraint",
+        "shared_head_zero_initialized": False,
+        "family_residual_zero_initialized": True,
+        "exact_task_residual_zero_initialized": True,
+    }
+    if not enabled:
+        return empty
+
+    eligible = [
+        samples[index]
+        for index in train_indices
+        if str(samples[index].get("target_family", "")).strip()
+        == "solid_neglog_mol_kg"
+    ]
+    if not eligible:
+        raise ValueError(
+            "Hierarchical stage-3 head requires solid_neglog_mol_kg training rows."
+        )
+    task_counts = Counter(str(sample.get("task_head", "")).strip() for sample in eligible)
+    task_counts.pop("", None)
+    if not task_counts:
+        raise ValueError("Hierarchical stage-3 head found no routed task heads.")
+
+    task_family_labels: dict[str, str] = {}
+    for sample in eligible:
+        task_head = str(sample.get("task_head", "")).strip()
+        if not task_head:
+            continue
+        family_label = str(sample.get("task_family", "")).strip()
+        if not family_label or family_label == MISSING_CATEGORY_TOKEN:
+            base_head = str(sample.get("base_task_head", task_head)).strip()
+            family_label = base_head.split("_", 1)[0] or "other"
+        previous = task_family_labels.setdefault(task_head, family_label)
+        if previous != family_label:
+            raise ValueError(
+                f"Hierarchical task head maps to multiple families: {task_head}"
+            )
+
+    family_keys = {
+        label: f"family_{position}"
+        for position, label in enumerate(sorted(set(task_family_labels.values())))
+    }
+    head_families = {
+        task_head: family_keys[label]
+        for task_head, label in sorted(task_family_labels.items())
+    }
+    family_counts: Counter[str] = Counter()
+    for task_head, count in task_counts.items():
+        family_counts[head_families[task_head]] += int(count)
+
+    def residual_contribution_scale(count: int, tau: float) -> float:
+        return 1.0 if tau <= 0 else float(count) / (float(count) + float(tau))
+
+    return {
+        "enabled": True,
+        "kind": "shared_plus_task_family_plus_exact_task_residual",
+        "target_family": "solid_neglog_mol_kg",
+        "heads": sorted(task_counts),
+        "head_families": head_families,
+        "family_labels": {key: label for label, key in family_keys.items()},
+        "family_counts": dict(sorted(family_counts.items())),
+        "task_counts": dict(sorted(task_counts.items())),
+        "family_scales": {
+            family: residual_contribution_scale(count, family_tau)
+            for family, count in sorted(family_counts.items())
+        },
+        "task_scales": {
+            task_head: residual_contribution_scale(count, task_tau)
+            for task_head, count in sorted(task_counts.items())
+        },
+        "family_tau": float(family_tau),
+        "task_tau": float(task_tau),
+        "count_source": "finetune_mgkg_training_only",
+        "train_identity_sha256": sample_indices_sha256(samples, train_indices),
+        "non_train_rows_used": 0,
+        "residual_contribution_scale_formula": "alpha=n/(n+tau)",
+        "scale_interpretation": "effective_initial_regularization_not_a_hard_constraint",
+        "shared_head_zero_initialized": False,
+        "family_residual_zero_initialized": True,
+        "exact_task_residual_zero_initialized": True,
+    }
+
+
+def build_task_equal_width_target_bin_sampling_spec(
+    samples: list[dict[str, Any]],
+    *,
+    train_indices: list[int],
+    enabled: bool,
+    bins: int,
+    min_weight: float,
+    max_weight: float,
+) -> tuple[dict[int, float], dict[str, Any]]:
+    """Build bounded, train-only inverse-stratum weights without changing task mass.
+
+    Equal-width raw-target bins are fitted independently inside each routed task
+    using only stage-3 training rows. After inverse-bin-frequency weighting, a
+    bounded scalar projection restores each task's expected sampling mass to its
+    original row count.
+    """
+
+    audit: dict[str, Any] = {
+        "enabled": bool(enabled),
+        "kind": "within_task_equal_width_target_bin_inverse_frequency",
+        "sampler": "torch.utils.data.WeightedRandomSampler",
+        "replacement": True,
+        "count_source": "finetune_mgkg_training_only",
+        "target_source": "target_value_raw",
+        "requested_bins": int(bins),
+        "min_weight": float(min_weight),
+        "max_weight": float(max_weight),
+        "preserve_task_expected_mass": True,
+        "train_rows": int(len(train_indices)),
+        "train_identity_sha256": sample_indices_sha256(samples, train_indices),
+        "non_train_rows_used": 0,
+        "tasks": {},
+    }
+    if not enabled:
+        return {}, audit
+    if not train_indices:
+        raise ValueError("Equal-width target-bin sampling requires stage-3 training rows.")
+
+    by_task: dict[str, list[int]] = {}
+    for index in train_indices:
+        task_head = str(samples[index].get("task_head", "")).strip()
+        if not task_head:
+            raise ValueError("Target-bin sampling found a stage-3 row without task_head.")
+        target = optional_float(samples[index].get("target_value_raw"))
+        if target is None:
+            raise ValueError("Target-bin sampling found a non-finite stage-3 raw target.")
+        by_task.setdefault(task_head, []).append(index)
+
+    weights: dict[int, float] = {}
+    for task_head, indices in sorted(by_task.items()):
+        values = np.asarray(
+            [float(samples[index]["target_value_raw"]) for index in indices],
+            dtype=float,
+        )
+        target_min = float(values.min())
+        target_max = float(values.max())
+        if target_max <= target_min:
+            bin_ids = np.zeros(len(indices), dtype=int)
+            bin_width = 0.0
+        else:
+            edges = np.linspace(target_min, target_max, int(bins) + 1)
+            bin_width = float((target_max - target_min) / int(bins))
+            # Values at the maximum remain in the last bin; every other
+            # boundary value is assigned deterministically to the upper bin.
+            bin_ids = np.searchsorted(edges[1:-1], values, side="right")
+        bin_counts = Counter(int(value) for value in bin_ids.tolist())
+        effective_bins = max(len(bin_counts), 1)
+        raw = np.asarray(
+            [len(indices) / (effective_bins * bin_counts[int(bin_id)]) for bin_id in bin_ids],
+            dtype=float,
+        )
+        bounded = _project_sampling_weights_to_task_mass(
+            raw,
+            target_mass=float(len(indices)),
+            min_weight=float(min_weight),
+            max_weight=float(max_weight),
+        )
+        for index, value in zip(indices, bounded.tolist()):
+            weights[index] = float(value)
+        expected_mass = float(bounded.sum())
+        audit["tasks"][task_head] = {
+            "rows": int(len(indices)),
+            "occupied_bins": int(effective_bins),
+            "target_min": target_min,
+            "target_max": target_max,
+            "bin_width": bin_width,
+            "bin_counts": {
+                str(key): int(value) for key, value in sorted(bin_counts.items())
+            },
+            "weight_min": float(bounded.min()),
+            "weight_max": float(bounded.max()),
+            "weight_mean": float(bounded.mean()),
+            "expected_sampling_mass": expected_mass,
+            "expected_mass_error": expected_mass - float(len(indices)),
+        }
+    audit["task_count"] = int(len(by_task))
+    audit["weight_min_realized"] = float(min(weights.values()))
+    audit["weight_max_realized"] = float(max(weights.values()))
+    audit["expected_total_sampling_mass"] = float(sum(weights.values()))
+    return weights, audit
+
+
+def _project_sampling_weights_to_task_mass(
+    raw_weights: np.ndarray,
+    *,
+    target_mass: float,
+    min_weight: float,
+    max_weight: float,
+) -> np.ndarray:
+    """Scale then clip positive weights while satisfying a feasible sum."""
+
+    raw = np.asarray(raw_weights, dtype=float)
+    if raw.ndim != 1 or raw.size == 0 or not np.isfinite(raw).all() or np.any(raw <= 0):
+        raise ValueError("Sampling weights must be a finite, positive vector.")
+    feasible_min = float(raw.size) * float(min_weight)
+    feasible_max = float(raw.size) * float(max_weight)
+    if target_mass < feasible_min - 1e-9 or target_mass > feasible_max + 1e-9:
+        raise ValueError("Requested task sampling mass is outside the clipping bounds.")
+    low = 0.0
+    high = max(1.0, float(target_mass / max(raw.sum(), 1e-12)))
+    while float(np.clip(high * raw, min_weight, max_weight).sum()) < target_mass:
+        high *= 2.0
+    for _ in range(80):
+        middle = (low + high) / 2.0
+        mass = float(np.clip(middle * raw, min_weight, max_weight).sum())
+        if mass < target_mass:
+            low = middle
+        else:
+            high = middle
+    projected = np.clip(((low + high) / 2.0) * raw, min_weight, max_weight)
+    if abs(float(projected.sum()) - float(target_mass)) > 1e-7:
+        raise RuntimeError("Could not preserve task expected sampling mass after clipping.")
+    return projected
+
+
+def sampling_weights_for_stage_dataset(
+    stage_dataset: Any,
+    *,
+    source_weights: Mapping[int, float],
+) -> list[float]:
+    """Expand source-row weights over optional deterministic augmentation replicas."""
+
+    expanded: list[float] = []
+    for position in range(len(stage_dataset)):
+        if isinstance(stage_dataset, _NoisyIndexDataset):
+            source_index, _ = stage_dataset.source(position)
+        elif isinstance(stage_dataset, _IndexDataset):
+            source_index = stage_dataset.indices[position]
+        else:  # pragma: no cover - stage construction owns the supported types.
+            raise TypeError(
+                "Target-bin sampling supports only _IndexDataset or _NoisyIndexDataset."
+            )
+        if source_index not in source_weights:
+            raise ValueError(
+                f"Target-bin sampling is missing a train-only source weight: {source_index}"
+            )
+        expanded.append(float(source_weights[source_index]))
+    return expanded
 
 
 def resolve_task_weights(
@@ -4793,6 +5387,411 @@ def normalize_prediction_split_parts(
 
 def clone_state_dict(model: Any) -> dict[str, Any]:
     return {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+
+
+def stage3_init_checkpoint_contract(
+    *,
+    data_identity: Mapping[str, Any],
+    preprocessing: Mapping[str, Any],
+    base_architecture: Mapping[str, Any],
+    weighting_and_auxiliary: Mapping[str, Any],
+    stage12_protocol: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Seal the complete compatibility boundary for reusable stage-1/2 weights."""
+
+    contract = {
+        "schema_version": 2,
+        "data_identity": dict(data_identity),
+        "preprocessing": dict(preprocessing),
+        "base_architecture": dict(base_architecture),
+        # Enforce the scientific/runtime boundary at the contract constructor
+        # as well as at the experiment assembly call site.  This prevents a
+        # future caller from accidentally sealing cache provenance.
+        "weighting_and_auxiliary": scientific_summary_contract(
+            weighting_and_auxiliary
+        ),
+        "stage12_protocol": dict(stage12_protocol),
+    }
+    return seal_stage3_init_contract(contract)
+
+
+def canonical_contract_value(value: Any) -> Any:
+    """Convert nested scientific/config objects into deterministic JSON values."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): canonical_contract_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, np.ndarray):
+        return canonical_contract_value(value.tolist())
+    if isinstance(value, np.generic):
+        return canonical_contract_value(value.item())
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [canonical_contract_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        normalized = [canonical_contract_value(item) for item in value]
+        return sorted(normalized, key=canonical_json)
+    if isinstance(value, float):
+        if math.isnan(value):
+            return {"__nonfinite_float__": "nan"}
+        if math.isinf(value):
+            return {"__nonfinite_float__": "inf" if value > 0 else "-inf"}
+        return float(value)
+    if isinstance(value, (str, int, bool)) or value is None:
+        return value
+    if hasattr(value, "detach") and hasattr(value, "cpu") and hasattr(value, "tolist"):
+        return canonical_contract_value(value.detach().cpu().tolist())
+    raise TypeError(
+        f"Unsupported value in stage-3 init checkpoint contract: {type(value).__name__}"
+    )
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(
+        canonical_contract_value(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def canonical_sha256(value: Any) -> str:
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def scientific_summary_contract(value: Any) -> Any:
+    """Remove runtime cache provenance from a scientific checkpoint contract.
+
+    Cache hits, paths, creation flags, schemas, and cache keys describe how a
+    deterministic result was obtained, not which result was obtained.  They
+    remain in the normal experiment manifest for traceability.  Recursively
+    excluding every ``cache_*`` key here makes cold and warm executions
+    compatible while preserving scientific configuration and statistics.
+    """
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): scientific_summary_contract(item)
+            for key, item in value.items()
+            if not str(key).strip().lower().startswith("cache_")
+        }
+    if isinstance(value, list):
+        return [scientific_summary_contract(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(scientific_summary_contract(item) for item in value)
+    return value
+
+
+def stage3_contract_sha256(contract: Mapping[str, Any]) -> str:
+    payload = dict(contract)
+    payload.pop("sha256", None)
+    return canonical_sha256(payload)
+
+
+def seal_stage3_init_contract(contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize and hash a contract, never preserving a caller-supplied digest."""
+
+    normalized = canonical_contract_value(contract)
+    if not isinstance(normalized, dict):  # pragma: no cover - guarded by type.
+        raise TypeError("Stage-3 init checkpoint contract must be a mapping.")
+    normalized["sha256"] = stage3_contract_sha256(normalized)
+    return normalized
+
+
+def verify_stage3_init_contract(contract: Mapping[str, Any], *, label: str) -> str:
+    """Recompute a payload digest and reject stale or tampered self-reported hashes."""
+
+    claimed = str(contract.get("sha256", ""))
+    recomputed = stage3_contract_sha256(contract)
+    if not claimed or claimed != recomputed:
+        raise ValueError(
+            f"{label} stage-3 init checkpoint contract hash is invalid: "
+            f"claimed={claimed or '<missing>'} recomputed={recomputed}"
+        )
+    return recomputed
+
+
+def database_source_identity(
+    db_path: str | Path, *, source_table: str, split_name: str
+) -> dict[str, Any]:
+    path = Path(db_path).resolve()
+    stat = path.stat()
+    return {
+        "modeling_tables_db": str(path),
+        "database_size_bytes": int(stat.st_size),
+        "database_mtime_ns": int(stat.st_mtime_ns),
+        "source_table": str(source_table),
+        "split_name": str(split_name),
+        "identity_method": "path_size_mtime_plus_selected_sample_content_v1",
+    }
+
+
+def file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def stage12_runtime_code_identity() -> dict[str, Any]:
+    project_root = Path(__file__).resolve().parents[2]
+    relative_paths = (
+        "qsar_tl/modeling/network.py",
+        "qsar_tl/modeling/dataset.py",
+        "qsar_tl/training/deep_experiment.py",
+        "qsar_tl/training/deep_train.py",
+        "qsar_tl/training/censored_loss.py",
+        "qsar_tl/training/toxicity_binning.py",
+    )
+    return {
+        relative_path: file_sha256(project_root / relative_path)
+        for relative_path in relative_paths
+    }
+
+
+def sample_scientific_identity_sha256(
+    samples: list[dict[str, Any]],
+    indices: list[int] | tuple[int, ...],
+    *,
+    include_split_part: bool = False,
+) -> str:
+    records = []
+    for index in indices:
+        sample = samples[index]
+        record = {
+            "sample_id": sample.get("sample_id", ""),
+            "aggregate_id": sample.get("aggregate_id", ""),
+            "record_id": sample.get("record_id", ""),
+            "result_ids": sample.get("result_ids", ""),
+            "task_head": sample.get("task_head", ""),
+            "base_task_head": sample.get("base_task_head", ""),
+            "target_name": sample.get("target_name", ""),
+            "target_family": sample.get("target_family", ""),
+            "target_value_raw": sample.get("target_value_raw", None),
+            "target_value_scaled": sample.get("target_value_scaled", None),
+        }
+        if include_split_part:
+            record["split_part"] = sample.get("split_part", "")
+            record["original_split_part"] = sample.get("original_split_part", "")
+        records.append(record)
+    records.sort(key=canonical_json)
+    return canonical_sha256(records)
+
+
+def sample_preprocessing_input_sha256(
+    samples: list[dict[str, Any]], indices: list[int] | tuple[int, ...]
+) -> str:
+    records: list[dict[str, Any]] = []
+    for index in indices:
+        sample = samples[index]
+        record = {
+            "sample_id": sample.get("sample_id", ""),
+            "molecular_numeric": sample.get("molecular_numeric", []),
+            "fingerprint": sample.get("fingerprint", []),
+            "molecular_graph": sample.get("molecular_graph", {}),
+            "categorical_ids": sample.get("categorical_ids", {}),
+            "adapter_name": sample.get("adapter_name", ""),
+            "adapter_id": sample.get("adapter_id", 0),
+            "target_scale_key": sample.get("target_scale_key", ""),
+            "target_value": sample.get("target_value", None),
+            "sample_weight": sample.get("sample_weight", 1.0),
+            "toxicity_bin_index": sample.get("toxicity_bin_index", -1),
+            "censored_direction_id": sample.get("censored_direction_id", 0),
+        }
+        records.append(record)
+    digest = hashlib.sha256()
+    for record in sorted(records, key=canonical_json):
+        digest.update(canonical_json(record).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def sample_weight_identity_contract(
+    samples: list[dict[str, Any]], indices: list[int] | tuple[int, ...]
+) -> dict[str, Any]:
+    """Hash the exact per-sample weights consumed by one training stage."""
+
+    records: list[dict[str, Any]] = []
+    for index in indices:
+        sample = samples[index]
+        records.append(
+            {
+                "sample_id": sample.get("sample_id", ""),
+                "aggregate_id": sample.get("aggregate_id", ""),
+                "task_head": sample.get("task_head", ""),
+                "split_part": sample.get("split_part", ""),
+                "sample_weight": sample.get("sample_weight", 1.0),
+            }
+        )
+    records.sort(key=canonical_json)
+    return {
+        "rows": int(len(indices)),
+        "sha256": canonical_sha256(records),
+    }
+
+
+def sample_indices_contract(
+    samples: list[dict[str, Any]], indices: list[int] | tuple[int, ...]
+) -> dict[str, Any]:
+    return {
+        "rows": int(len(indices)),
+        "scientific_identity_sha256": sample_scientific_identity_sha256(
+            samples, indices
+        ),
+        "preprocessing_input_sha256": sample_preprocessing_input_sha256(
+            samples, indices
+        ),
+    }
+
+
+def sample_indices_sha256(
+    samples: list[dict[str, Any]], indices: list[int] | tuple[int, ...]
+) -> str:
+    """Hash canonical scientific row identities used by a checkpoint phase."""
+
+    return sample_scientific_identity_sha256(samples, indices)
+
+
+def export_stage3_init_checkpoint(
+    model: Any,
+    path: str | Path,
+    *,
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Export the restored stage-2 model before any stage-3 optimizer step."""
+
+    import torch
+
+    checkpoint_path = Path(path)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    sealed_contract = seal_stage3_init_contract(contract)
+    payload = {
+        "format": "qsar_stage3_init_v1",
+        "contract": sealed_contract,
+        "state_dict": clone_state_dict(model),
+    }
+    torch.save(payload, checkpoint_path)
+    return {
+        "exported": True,
+        "path": str(checkpoint_path),
+        "contract_sha256": sealed_contract["sha256"],
+        "contract_schema_version": int(sealed_contract.get("schema_version", 0)),
+        "contract_hash_recomputed": True,
+        "parameter_tensors": int(len(payload["state_dict"])),
+    }
+
+
+def load_stage3_init_checkpoint(
+    model: Any,
+    path: str | Path,
+    *,
+    expected_contract: Mapping[str, Any],
+    reset_hierarchical_heads: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Load a same-seed stage-2 checkpoint, resetting G3 residual branches."""
+
+    import torch
+
+    checkpoint_path = Path(path)
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Stage-3 init checkpoint not found: {checkpoint_path}")
+    try:
+        payload = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    except TypeError:  # pragma: no cover - compatibility with older torch.
+        payload = torch.load(checkpoint_path, map_location="cpu")
+    if not isinstance(payload, Mapping) or payload.get("format") != "qsar_stage3_init_v1":
+        raise ValueError("Stage-3 init checkpoint has an unsupported or missing format.")
+    contract = payload.get("contract")
+    state = payload.get("state_dict")
+    if not isinstance(contract, Mapping) or not isinstance(state, Mapping):
+        raise ValueError("Stage-3 init checkpoint is missing contract or state_dict.")
+    expected_sha = verify_stage3_init_contract(
+        expected_contract, label="Expected"
+    )
+    actual_sha = verify_stage3_init_contract(contract, label="Checkpoint payload")
+    if actual_sha != expected_sha:
+        raise ValueError(
+            "Stage-3 init checkpoint contract mismatch; same seed, split, preprocessing, "
+            "and base architecture are required. "
+            f"expected={expected_sha or '<missing>'} actual={actual_sha or '<missing>'}"
+        )
+
+    target_state = model.state_dict()
+    registered_heads = frozenset(getattr(model, "mgkg_hierarchical_heads", ()))
+    requested_reset_heads = frozenset(reset_hierarchical_heads)
+    if requested_reset_heads != registered_heads:
+        raise ValueError(
+            "G3 checkpoint loading may reset only the model's pre-registered "
+            "hierarchical heads: "
+            f"registered={sorted(registered_heads)} requested={sorted(requested_reset_heads)}"
+        )
+    registered_hierarchy_keys = {
+        key
+        for key in target_state
+        if key.startswith("mgkg_hierarchical_shared_head.")
+        or key.startswith("mgkg_hierarchical_family_heads.")
+        or any(key.startswith(f"heads.{head}.") for head in registered_heads)
+    }
+    reset_hierarchy_keys = {
+        key
+        for key in registered_hierarchy_keys
+        if key.startswith("mgkg_hierarchical_family_heads.")
+        or any(key.startswith(f"heads.{head}.") for head in registered_heads)
+    }
+    compatible: dict[str, Any] = {}
+    skipped_reset: list[str] = []
+    for key, value in state.items():
+        key = str(key)
+        if key in reset_hierarchy_keys:
+            skipped_reset.append(key)
+            continue
+        if key not in target_state:
+            raise ValueError(f"Stage-3 init checkpoint has an unexpected parameter: {key}")
+        if tuple(value.shape) != tuple(target_state[key].shape):
+            raise ValueError(
+                f"Stage-3 init checkpoint parameter shape mismatch for {key}: "
+                f"checkpoint={tuple(value.shape)} model={tuple(target_state[key].shape)}"
+            )
+        compatible[key] = value
+    missing, unexpected = model.load_state_dict(compatible, strict=False)
+    if unexpected:
+        raise ValueError(f"Unexpected parameters during stage-3 checkpoint load: {unexpected}")
+    allowed_missing = set(registered_hierarchy_keys)
+    disallowed_missing = sorted(set(missing) - allowed_missing)
+    if disallowed_missing:
+        raise ValueError(
+            "Stage-3 init checkpoint is missing non-hierarchical parameters: "
+            f"{disallowed_missing}"
+        )
+    # Both family and exact-task residuals must start at exactly zero even when
+    # the source checkpoint was itself hierarchical.
+    family_heads = getattr(model, "mgkg_hierarchical_family_heads", None)
+    if family_heads is not None:
+        for module in family_heads.values():
+            torch.nn.init.zeros_(module.weight)
+            torch.nn.init.zeros_(module.bias)
+    for head in reset_hierarchical_heads:
+        module = model.heads[head]
+        torch.nn.init.zeros_(module.weight)
+        torch.nn.init.zeros_(module.bias)
+    return {
+        "loaded": True,
+        "path": str(checkpoint_path),
+        "contract_sha256": actual_sha,
+        "contract_schema_version": int(contract.get("schema_version", 0)),
+        "contract_hash_recomputed": True,
+        "loaded_parameter_tensors": int(len(compatible)),
+        "reset_parameter_tensors": int(len(skipped_reset)),
+        "allowed_missing_hierarchy_tensors": int(
+            len(set(missing) & registered_hierarchy_keys)
+        ),
+        "hierarchical_residuals_reset": bool(reset_hierarchical_heads),
+    }
 
 
 def build_scheduler(optimizer: Any, config: DeepTrainingConfig, epochs: int) -> Any | None:

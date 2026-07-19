@@ -11,9 +11,45 @@ from qsar_tl.training.deep_experiment import (
     should_update_swa,
 )
 from qsar_tl.training.deep_train import DeepTrainingConfig
+from qsar_tl.training.train import build_parser
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_g_series_stage3_cli_exposes_sampling_hierarchy_and_checkpoint_controls() -> None:
+    args = build_parser().parse_args(
+        [
+            "--config",
+            "config.yaml",
+            "--finetune-mgkg-target-bin-sampling",
+            "--finetune-mgkg-target-bins",
+            "10",
+            "--finetune-mgkg-sampling-min-weight",
+            "0.5",
+            "--finetune-mgkg-sampling-max-weight",
+            "2.0",
+            "--finetune-mgkg-hierarchical-head",
+            "--finetune-mgkg-hierarchical-family-tau",
+            "128",
+            "--finetune-mgkg-hierarchical-task-tau",
+            "64",
+            "--finetune-mgkg-init-checkpoint",
+            "stage2.pt",
+            "--export-finetune-mgkg-init-checkpoint",
+            "export.pt",
+        ]
+    )
+
+    assert args.finetune_mgkg_target_bin_sampling is True
+    assert args.finetune_mgkg_target_bins == 10
+    assert args.finetune_mgkg_sampling_min_weight == 0.5
+    assert args.finetune_mgkg_sampling_max_weight == 2.0
+    assert args.finetune_mgkg_hierarchical_head is True
+    assert args.finetune_mgkg_hierarchical_family_tau == 128
+    assert args.finetune_mgkg_hierarchical_task_tau == 64
+    assert args.finetune_mgkg_init_checkpoint == "stage2.pt"
+    assert args.export_finetune_mgkg_init_checkpoint == "export.pt"
 
 
 def test_staged_training_auto_monitor_isolated_from_finetune_rows() -> None:

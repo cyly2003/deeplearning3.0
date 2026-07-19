@@ -100,6 +100,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--finetune-mgkg-toxicity-bin-loss-weight", type=float, default=None)
     parser.add_argument("--finetune-mgkg-mse-loss-weight", type=float, default=None)
     parser.add_argument(
+        "--finetune-mgkg-target-bin-sampling",
+        dest="finetune_mgkg_target_bin_sampling",
+        action="store_true",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-finetune-mgkg-target-bin-sampling",
+        dest="finetune_mgkg_target_bin_sampling",
+        action="store_false",
+    )
+    parser.add_argument("--finetune-mgkg-target-bins", type=int, default=None)
+    parser.add_argument("--finetune-mgkg-sampling-min-weight", type=float, default=None)
+    parser.add_argument("--finetune-mgkg-sampling-max-weight", type=float, default=None)
+    parser.add_argument(
+        "--finetune-mgkg-hierarchical-head",
+        dest="finetune_mgkg_hierarchical_head",
+        action="store_true",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-finetune-mgkg-hierarchical-head",
+        dest="finetune_mgkg_hierarchical_head",
+        action="store_false",
+    )
+    parser.add_argument("--finetune-mgkg-hierarchical-family-tau", type=float, default=None)
+    parser.add_argument("--finetune-mgkg-hierarchical-task-tau", type=float, default=None)
+    parser.add_argument("--finetune-mgkg-init-checkpoint", default=None)
+    parser.add_argument("--export-finetune-mgkg-init-checkpoint", default=None)
+    parser.add_argument(
         "--mgkg-residual-adapter",
         dest="mgkg_residual_adapter",
         action="store_true",
@@ -253,6 +282,15 @@ def main() -> None:
         finetune_mgkg_replay_fraction=args.finetune_mgkg_replay_fraction,
         finetune_mgkg_toxicity_bin_loss_weight=args.finetune_mgkg_toxicity_bin_loss_weight,
         finetune_mgkg_mse_loss_weight=args.finetune_mgkg_mse_loss_weight,
+        finetune_mgkg_target_bin_sampling=args.finetune_mgkg_target_bin_sampling,
+        finetune_mgkg_target_bins=args.finetune_mgkg_target_bins,
+        finetune_mgkg_sampling_min_weight=args.finetune_mgkg_sampling_min_weight,
+        finetune_mgkg_sampling_max_weight=args.finetune_mgkg_sampling_max_weight,
+        finetune_mgkg_hierarchical_head=args.finetune_mgkg_hierarchical_head,
+        finetune_mgkg_hierarchical_family_tau=args.finetune_mgkg_hierarchical_family_tau,
+        finetune_mgkg_hierarchical_task_tau=args.finetune_mgkg_hierarchical_task_tau,
+        finetune_mgkg_init_checkpoint=args.finetune_mgkg_init_checkpoint,
+        export_finetune_mgkg_init_checkpoint=args.export_finetune_mgkg_init_checkpoint,
         mgkg_residual_adapter=args.mgkg_residual_adapter,
         mgkg_residual_adapter_bottleneck=args.mgkg_residual_adapter_bottleneck,
         head_routing=args.head_routing,

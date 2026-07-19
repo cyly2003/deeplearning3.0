@@ -152,6 +152,41 @@ def test_mgkg_residual_adapter_is_zero_initialized_and_exactly_routed() -> None:
     )
 
 
+def test_hierarchical_molkg_head_zero_initializes_only_family_and_task_residuals() -> None:
+    ptox_head = "ECx_Mortality__aquatic_pTox_mol_L"
+    molkg_a = "ECx_Mortality__solid_neglog_mol_kg"
+    molkg_b = "ECx_Growth__solid_neglog_mol_kg"
+    model = EcotoxMultiTaskNetwork(
+        DeepModelConfig(
+            numeric_dim=2,
+            fingerprint_dim=2,
+            task_heads=(ptox_head, molkg_a, molkg_b),
+            hidden_dims=(8, 4),
+            dropout=0.0,
+            mgkg_hierarchical_heads=(molkg_a, molkg_b),
+            mgkg_hierarchical_head_families={molkg_a: "ecx", molkg_b: "ecx"},
+            mgkg_hierarchical_family_scales={"ecx": 0.8},
+            mgkg_hierarchical_task_scales={molkg_a: 0.6, molkg_b: 0.5},
+        )
+    )
+    numeric = torch.tensor([[0.1, 0.2], [0.3, 0.4]], dtype=torch.float32)
+    fingerprint = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+
+    assert torch.count_nonzero(model.mgkg_hierarchical_family_heads["ecx"].weight) == 0
+    assert torch.count_nonzero(model.heads[molkg_a].weight) == 0
+    assert torch.count_nonzero(model.heads[molkg_b].weight) == 0
+    assert torch.count_nonzero(model.heads[ptox_head].weight) > 0
+    initial = model(numeric, fingerprint)
+    assert torch.equal(initial[molkg_a], initial[molkg_b])
+
+    with torch.no_grad():
+        model.heads[molkg_a].bias.fill_(1.0)
+    changed = model(numeric, fingerprint)
+    assert torch.allclose(changed[molkg_a] - initial[molkg_a], torch.full((2,), 0.6))
+    assert torch.equal(changed[molkg_b], initial[molkg_b])
+    assert torch.equal(changed[ptox_head], initial[ptox_head])
+
+
 def test_censored_batch_loss_skips_regression_and_adds_hinge() -> None:
     outputs = {"ECx_Mortality": torch.tensor([2.0, 4.0], dtype=torch.float32)}
     targets = torch.tensor([2.0, 3.0], dtype=torch.float32)

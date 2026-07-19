@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import sqrt
+from math import isfinite, sqrt
 from typing import Mapping, Sequence
 
 try:
@@ -44,6 +44,10 @@ class DeepModelConfig:
     use_mgkg_residual_adapter: bool = False
     mgkg_residual_adapter_bottleneck: int = 32
     mgkg_residual_adapter_heads: tuple[str, ...] = ()
+    mgkg_hierarchical_heads: tuple[str, ...] = ()
+    mgkg_hierarchical_head_families: Mapping[str, str] = field(default_factory=dict)
+    mgkg_hierarchical_family_scales: Mapping[str, float] = field(default_factory=dict)
+    mgkg_hierarchical_task_scales: Mapping[str, float] = field(default_factory=dict)
 
 
 class EcotoxMultiTaskNetwork(nn.Module):
@@ -143,6 +147,76 @@ class EcotoxMultiTaskNetwork(nn.Module):
         self.heads = nn.ModuleDict(
             {task_head: nn.Linear(head_input_dim, 1) for task_head in config.task_heads}
         )
+        self.mgkg_hierarchical_heads = frozenset(config.mgkg_hierarchical_heads)
+        if not self.mgkg_hierarchical_heads.issubset(set(config.task_heads)):
+            unknown = sorted(self.mgkg_hierarchical_heads - set(config.task_heads))
+            raise ValueError(f"Hierarchical soil heads are not model task heads: {unknown}")
+        missing_families = sorted(
+            head
+            for head in self.mgkg_hierarchical_heads
+            if head not in config.mgkg_hierarchical_head_families
+        )
+        if missing_families:
+            raise ValueError(
+                "Every hierarchical soil head needs a family mapping: "
+                f"{missing_families}"
+            )
+        self.mgkg_hierarchical_head_families = {
+            str(head): str(config.mgkg_hierarchical_head_families[head])
+            for head in self.mgkg_hierarchical_heads
+        }
+        hierarchical_families = tuple(
+            sorted(set(self.mgkg_hierarchical_head_families.values()))
+        )
+        self.mgkg_hierarchical_shared_head = (
+            nn.Linear(head_input_dim, 1) if self.mgkg_hierarchical_heads else None
+        )
+        self.mgkg_hierarchical_family_heads = nn.ModuleDict(
+            {family: nn.Linear(head_input_dim, 1) for family in hierarchical_families}
+        )
+        self.mgkg_hierarchical_family_scales = {
+            family: float(config.mgkg_hierarchical_family_scales.get(family, 1.0))
+            for family in hierarchical_families
+        }
+        self.mgkg_hierarchical_task_scales = {
+            head: float(config.mgkg_hierarchical_task_scales.get(head, 1.0))
+            for head in self.mgkg_hierarchical_heads
+        }
+        invalid_scales = {
+            **{
+                f"family:{key}": value
+                for key, value in self.mgkg_hierarchical_family_scales.items()
+                if not isfinite(value) or not 0.0 <= value <= 1.0
+            },
+            **{
+                f"task:{key}": value
+                for key, value in self.mgkg_hierarchical_task_scales.items()
+                if not isfinite(value) or not 0.0 <= value <= 1.0
+            },
+        }
+        if invalid_scales:
+            raise ValueError(
+                "Hierarchical residual contribution scales must be finite values in [0, 1]: "
+                f"{invalid_scales}"
+            )
+        hierarchical_adapter_routes = {
+            head in self.mgkg_residual_adapter_heads
+            for head in self.mgkg_hierarchical_heads
+        }
+        if len(hierarchical_adapter_routes) > 1:
+            raise ValueError(
+                "All hierarchical soil heads must share the same residual-adapter route."
+            )
+        self.mgkg_hierarchical_uses_residual_adapter = bool(
+            hierarchical_adapter_routes == {True}
+        )
+        if self.mgkg_hierarchical_heads:
+            for family_head in self.mgkg_hierarchical_family_heads.values():
+                nn.init.zeros_(family_head.weight)
+                nn.init.zeros_(family_head.bias)
+            for task_head in self.mgkg_hierarchical_heads:
+                nn.init.zeros_(self.heads[task_head].weight)
+                nn.init.zeros_(self.heads[task_head].bias)
         self.mgkg_residual_adapter = (
             build_zero_initialized_residual_adapter(
                 head_input_dim,
@@ -180,12 +254,35 @@ class EcotoxMultiTaskNetwork(nn.Module):
             if self.mgkg_residual_adapter is not None
             else shared
         )
-        outputs = {
-            task_head: head(
-                mgkg_shared if task_head in self.mgkg_residual_adapter_heads else shared
+        outputs: dict[str, torch.Tensor] = {}
+        hierarchical_shared = (
+            self.mgkg_hierarchical_shared_head(
+                mgkg_shared
+                if self.mgkg_hierarchical_uses_residual_adapter
+                else shared
             ).squeeze(-1)
-            for task_head, head in self.heads.items()
-        }
+            if self.mgkg_hierarchical_shared_head is not None
+            else None
+        )
+        for task_head, head in self.heads.items():
+            routed_shared = (
+                mgkg_shared if task_head in self.mgkg_residual_adapter_heads else shared
+            )
+            if task_head not in self.mgkg_hierarchical_heads:
+                outputs[task_head] = head(routed_shared).squeeze(-1)
+                continue
+            if hierarchical_shared is None:  # pragma: no cover - guarded at construction
+                raise RuntimeError("Hierarchical soil head is missing its shared component.")
+            family = self.mgkg_hierarchical_head_families[task_head]
+            family_residual = self.mgkg_hierarchical_family_heads[family](
+                routed_shared
+            ).squeeze(-1)
+            task_residual = head(routed_shared).squeeze(-1)
+            outputs[task_head] = (
+                hierarchical_shared
+                + self.mgkg_hierarchical_family_scales[family] * family_residual
+                + self.mgkg_hierarchical_task_scales[task_head] * task_residual
+            )
         if self.toxicity_bin_classifier is not None:
             outputs[TOXICITY_BIN_LOGITS_KEY] = self.toxicity_bin_classifier(shared)
         return outputs

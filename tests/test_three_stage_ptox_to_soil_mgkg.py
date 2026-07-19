@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import copy
 import sqlite3
 import tempfile
 from contextlib import closing
@@ -15,7 +16,14 @@ from qsar_tl.training.deep_experiment import (
     apply_finetune_freeze,
     apply_head_routing,
     build_finetune_parameter_groups,
+    build_mgkg_hierarchical_head_spec,
+    build_task_equal_width_target_bin_sampling_spec,
+    export_stage3_init_checkpoint,
     get_ablation_spec,
+    load_stage3_init_checkpoint,
+    canonical_sha256,
+    seal_stage3_init_contract,
+    stage3_init_checkpoint_contract,
 )
 
 
@@ -324,3 +332,381 @@ def test_target_replay_batch_sampler_has_fixed_ratio_and_epoch_rotation() -> Non
     assert epoch_one != epoch_zero
     sampler.set_epoch(0)
     assert list(iter(sampler)) == epoch_zero
+
+
+def test_stage3_equal_width_target_bin_sampling_is_train_only_bounded_and_preserves_task_mass() -> None:
+    samples = []
+    for task, values in {
+        "A__solid_neglog_mol_kg": [0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 4.0],
+        "B__solid_neglog_mol_kg": [1.0, 1.0, 2.0, 3.0],
+    }.items():
+        samples.extend(
+            {
+                "task_head": task,
+                "target_value_raw": value,
+                "target_family": "solid_neglog_mol_kg",
+            }
+            for value in values
+        )
+    validation_index = len(samples)
+    samples.append(
+        {
+            "task_head": "A__solid_neglog_mol_kg",
+            "target_value_raw": 99.0,
+            "target_family": "solid_neglog_mol_kg",
+        }
+    )
+    train_indices = list(range(validation_index))
+
+    weights, audit = build_task_equal_width_target_bin_sampling_spec(
+        samples,
+        train_indices=train_indices,
+        enabled=True,
+        bins=10,
+        min_weight=0.5,
+        max_weight=2.0,
+    )
+
+    assert validation_index not in weights
+    assert audit["kind"] == "within_task_equal_width_target_bin_inverse_frequency"
+    assert min(weights.values()) >= 0.5
+    assert max(weights.values()) <= 2.0
+    assert len({round(value, 8) for value in weights.values()}) > 1
+    for task in ("A__solid_neglog_mol_kg", "B__solid_neglog_mol_kg"):
+        task_indices = [
+            index for index in train_indices if samples[index]["task_head"] == task
+        ]
+        assert sum(weights[index] for index in task_indices) == pytest.approx(
+            len(task_indices), abs=1e-7
+        )
+        assert audit["tasks"][task]["expected_mass_error"] == pytest.approx(0.0, abs=1e-7)
+
+
+def test_hierarchical_head_counts_and_residual_scales_use_stage3_training_only() -> None:
+    samples = [
+        {
+            "task_head": "ECx_Mortality__solid_neglog_mol_kg",
+            "task_family": "ECx",
+            "target_family": "solid_neglog_mol_kg",
+        },
+        {
+            "task_head": "ECx_Growth__solid_neglog_mol_kg",
+            "task_family": "ECx",
+            "target_family": "solid_neglog_mol_kg",
+        },
+        {
+            "task_head": "ECx_Mortality__solid_neglog_mol_kg",
+            "task_family": "ECx",
+            "target_family": "solid_neglog_mol_kg",
+        },
+        {  # Explicit validation row must not affect n or alpha.
+            "task_head": "ECx_Mortality__solid_neglog_mol_kg",
+            "task_family": "ECx",
+            "target_family": "solid_neglog_mol_kg",
+        },
+        {  # Non-molar targets are never routed through G3.
+            "task_head": "ECx_Mortality__solid_neglog_mg_kg",
+            "task_family": "ECx",
+            "target_family": "solid_neglog_mg_kg",
+        },
+    ]
+
+    spec = build_mgkg_hierarchical_head_spec(
+        samples,
+        train_indices=[0, 1, 2, 4],
+        enabled=True,
+        family_tau=3.0,
+        task_tau=2.0,
+    )
+
+    mortality = "ECx_Mortality__solid_neglog_mol_kg"
+    growth = "ECx_Growth__solid_neglog_mol_kg"
+    family = spec["head_families"][mortality]
+    assert set(spec["heads"]) == {mortality, growth}
+    assert spec["family_counts"][family] == 3
+    assert spec["task_counts"][mortality] == 2
+    assert spec["family_scales"][family] == pytest.approx(3.0 / 6.0)
+    assert spec["task_scales"][mortality] == pytest.approx(2.0 / 4.0)
+
+
+def test_stage3_checkpoint_partial_load_resets_g3_residuals(tmp_path: Path) -> None:
+    import torch
+
+    from qsar_tl.modeling.network import DeepModelConfig, EcotoxMultiTaskNetwork
+
+    ptox_head = "ECx_Mortality__aquatic_pTox_mol_L"
+    molkg_head = "ECx_Mortality__solid_neglog_mol_kg"
+    common = {
+        "numeric_dim": 2,
+        "fingerprint_dim": 2,
+        "task_heads": (ptox_head, molkg_head),
+        "hidden_dims": (4,),
+        "dropout": 0.0,
+    }
+    source = EcotoxMultiTaskNetwork(DeepModelConfig(**common))
+    with torch.no_grad():
+        source.trunk[0].weight.fill_(0.25)
+        source.heads[ptox_head].bias.fill_(0.75)
+        source.heads[molkg_head].weight.fill_(3.0)
+    contract = seal_stage3_init_contract(
+        {
+            "schema_version": 2,
+            "preprocessing": {
+                "manifest": {
+                    "categorical_maps": {"family": {"<missing>": 0, "A": 1}},
+                    "numeric_feature_names": ["MolWt", "TPSA"],
+                }
+            },
+            "stage12_protocol": {
+                "seed": 42,
+                "stage1": {
+                    "early_stopping": {"patience": 5},
+                    "train_samples": {
+                        "scientific_identity_sha256": canonical_sha256(
+                            [{"aggregate_id": "a", "target_value_raw": 1.0}]
+                        )
+                    },
+                },
+            },
+        }
+    )
+    checkpoint = tmp_path / "stage2.pt"
+    export_stage3_init_checkpoint(source, checkpoint, contract=contract)
+
+    target = EcotoxMultiTaskNetwork(
+        DeepModelConfig(
+            **common,
+            mgkg_hierarchical_heads=(molkg_head,),
+            mgkg_hierarchical_head_families={molkg_head: "ecx"},
+            mgkg_hierarchical_family_scales={"ecx": 0.9},
+            mgkg_hierarchical_task_scales={molkg_head: 0.8},
+        )
+    )
+    audit = load_stage3_init_checkpoint(
+        target,
+        checkpoint,
+        expected_contract=contract,
+        reset_hierarchical_heads=(molkg_head,),
+    )
+
+    assert audit["loaded"]
+    assert torch.equal(target.trunk[0].weight, source.trunk[0].weight)
+    assert torch.equal(target.heads[ptox_head].bias, source.heads[ptox_head].bias)
+    assert torch.count_nonzero(target.heads[molkg_head].weight) == 0
+    assert torch.count_nonzero(target.mgkg_hierarchical_family_heads["ecx"].weight) == 0
+    apply_finetune_freeze(target, "heads_only")
+    assert all(
+        parameter.requires_grad
+        for parameter in target.mgkg_hierarchical_shared_head.parameters()
+    )
+    assert all(
+        parameter.requires_grad
+        for parameter in target.mgkg_hierarchical_family_heads.parameters()
+    )
+    assert not any(parameter.requires_grad for parameter in target.trunk.parameters())
+
+
+def test_stage3_contract_matches_cold_and_warm_source_weight_cache_but_not_science_changes() -> None:
+    cold_summary = {
+        "enabled": True,
+        "method": "tanimoto_to_target",
+        "alpha": 0.75,
+        "min_weight": 0.5,
+        "max_weight": 2.0,
+        "applied": True,
+        "weighted_samples": 12,
+        "target_reference_samples": 4,
+        "weight_min": 0.61,
+        "weight_mean": 1.0,
+        "weight_max": 1.44,
+        "cache_enabled": True,
+        "cache_hit": False,
+        "cache_created": True,
+        "cache_schema": "source_similarity_weights_v2",
+        "cache_key": "deterministic-key",
+        "cache_path": "/cold/cache/deterministic-key.npz",
+    }
+    warm_summary = {
+        **cold_summary,
+        "cache_hit": True,
+        "cache_created": False,
+        "cache_path": "/warm/cache/deterministic-key.npz",
+    }
+
+    def build_contract(summary: dict[str, object], weight_sha256: str = "weights-a") -> dict[str, object]:
+        return stage3_init_checkpoint_contract(
+            data_identity={"split": "fixed"},
+            preprocessing={"schema": "fixed"},
+            base_architecture={"model": "fixed"},
+            weighting_and_auxiliary={
+                # Pass the raw runtime summary: the canonical contract
+                # constructor itself must remove cache provenance.
+                "source_weighting": summary,
+                "actual_training_sample_weights": {
+                    "stage1": {"rows": 12, "sha256": weight_sha256},
+                    "stage2": {"rows": 4, "sha256": "weights-stage2"},
+                },
+            },
+            stage12_protocol={"seed": 42},
+        )
+
+    cold_contract = build_contract(cold_summary)
+    warm_contract = build_contract(warm_summary)
+    assert cold_contract == warm_contract
+    assert cold_contract["sha256"] == warm_contract["sha256"]
+
+    for key, value in (
+        ("alpha", 0.9),
+        ("method", "proxy_distance_to_finetune"),
+    ):
+        changed = copy.deepcopy(warm_summary)
+        changed[key] = value
+        assert build_contract(changed)["sha256"] != cold_contract["sha256"]
+    assert build_contract(warm_summary, "weights-b")["sha256"] != cold_contract["sha256"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "category_mapping",
+        "feature_order",
+        "early_stop",
+        "target_value",
+    ],
+)
+def test_stage3_checkpoint_contract_rejects_preprocessing_protocol_and_target_changes(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    from qsar_tl.modeling.network import DeepModelConfig, EcotoxMultiTaskNetwork
+
+    model = EcotoxMultiTaskNetwork(
+        DeepModelConfig(
+            numeric_dim=2,
+            fingerprint_dim=2,
+            task_heads=("ptox", "molkg"),
+            hidden_dims=(4,),
+            dropout=0.0,
+        )
+    )
+    payload = {
+        "schema_version": 2,
+        "preprocessing": {
+            "manifest": {
+                "categorical_maps": {"family": {"<missing>": 0, "A": 1}},
+                "numeric_feature_names": ["MolWt", "TPSA"],
+            }
+        },
+        "stage12_protocol": {
+            "seed": 42,
+            "stage1": {
+                "early_stopping": {"patience": 5},
+                "train_samples": {
+                    "scientific_identity_sha256": canonical_sha256(
+                        [{"aggregate_id": "a", "target_value_raw": 1.0}]
+                    )
+                },
+            },
+        },
+    }
+    contract = seal_stage3_init_contract(payload)
+    checkpoint = tmp_path / f"stage2_{mutation}.pt"
+    export_stage3_init_checkpoint(model, checkpoint, contract=contract)
+
+    changed = copy.deepcopy(payload)
+    if mutation == "category_mapping":
+        changed["preprocessing"]["manifest"]["categorical_maps"]["family"]["A"] = 2
+    elif mutation == "feature_order":
+        changed["preprocessing"]["manifest"]["numeric_feature_names"] = [
+            "TPSA",
+            "MolWt",
+        ]
+    elif mutation == "early_stop":
+        changed["stage12_protocol"]["stage1"]["early_stopping"]["patience"] = 6
+    elif mutation == "target_value":
+        changed["stage12_protocol"]["stage1"]["train_samples"][
+            "scientific_identity_sha256"
+        ] = canonical_sha256([{"aggregate_id": "a", "target_value_raw": 2.0}])
+    expected = seal_stage3_init_contract(changed)
+
+    with pytest.raises(ValueError, match="contract mismatch"):
+        load_stage3_init_checkpoint(
+            model,
+            checkpoint,
+            expected_contract=expected,
+        )
+
+
+def test_stage3_checkpoint_recomputes_payload_hash_and_rejects_tampering(
+    tmp_path: Path,
+) -> None:
+    import torch
+
+    from qsar_tl.modeling.network import DeepModelConfig, EcotoxMultiTaskNetwork
+
+    model = EcotoxMultiTaskNetwork(
+        DeepModelConfig(
+            numeric_dim=2,
+            fingerprint_dim=2,
+            task_heads=("ptox",),
+            hidden_dims=(4,),
+            dropout=0.0,
+        )
+    )
+    contract = seal_stage3_init_contract(
+        {"schema_version": 2, "stage12_protocol": {"seed": 42}}
+    )
+    checkpoint = tmp_path / "tampered.pt"
+    export_stage3_init_checkpoint(model, checkpoint, contract=contract)
+    loaded = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    loaded["contract"]["stage12_protocol"]["seed"] = 43
+    # Deliberately retain the stale self-reported sha256.
+    torch.save(loaded, checkpoint)
+
+    with pytest.raises(ValueError, match="payload.*hash is invalid"):
+        load_stage3_init_checkpoint(
+            model,
+            checkpoint,
+            expected_contract=contract,
+        )
+
+
+def test_g3_checkpoint_allows_only_registered_hierarchical_missing_keys(
+    tmp_path: Path,
+) -> None:
+    import torch
+
+    from qsar_tl.modeling.network import DeepModelConfig, EcotoxMultiTaskNetwork
+
+    molkg_head = "ECx_Mortality__solid_neglog_mol_kg"
+    common = {
+        "numeric_dim": 2,
+        "fingerprint_dim": 2,
+        "task_heads": ("ptox", molkg_head),
+        "hidden_dims": (4,),
+        "dropout": 0.0,
+    }
+    source = EcotoxMultiTaskNetwork(DeepModelConfig(**common))
+    target = EcotoxMultiTaskNetwork(
+        DeepModelConfig(
+            **common,
+            mgkg_hierarchical_heads=(molkg_head,),
+            mgkg_hierarchical_head_families={molkg_head: "ecx"},
+        )
+    )
+    contract = seal_stage3_init_contract(
+        {"schema_version": 2, "stage12_protocol": {"seed": 42}}
+    )
+    checkpoint = tmp_path / "missing_base_parameter.pt"
+    export_stage3_init_checkpoint(source, checkpoint, contract=contract)
+    loaded = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    loaded["state_dict"].pop("trunk.0.weight")
+    torch.save(loaded, checkpoint)
+
+    with pytest.raises(ValueError, match="missing non-hierarchical"):
+        load_stage3_init_checkpoint(
+            target,
+            checkpoint,
+            expected_contract=contract,
+            reset_hierarchical_heads=(molkg_head,),
+        )
