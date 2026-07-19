@@ -108,7 +108,24 @@ def test_oof_split_builder_covers_outer_training_once_and_omits_test(tmp_path: P
                     (identity, f"task_{index % 3}", target_name, target_family, medium),
                 )
                 assignments.append(
-                    (parent, f"record-{identity}", identity, part, 42, "parent", source_table, "")
+                    (
+                        parent,
+                        f"record-{identity}",
+                        identity,
+                        part,
+                        42,
+                        "parent",
+                        source_table,
+                        "|".join(
+                            (
+                                "stage_contract_v1",
+                                f"stage=parent_{part}",
+                                f"medium_domain={medium}",
+                                f"target_name={target_name}",
+                                f"target_family={target_family}",
+                            )
+                        ),
+                    )
                 )
         conn.executemany("INSERT INTO split_assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?)", assignments)
         conn.commit()
@@ -142,6 +159,12 @@ def test_oof_split_builder_covers_outer_training_once_and_omits_test(tmp_path: P
                WHERE split_name LIKE '%_oof_fold%' AND split_part = 'test'"""
         ).fetchone()[0]
         assert outer_test == 0
+        non_strict = conn.execute(
+            """SELECT COUNT(*) FROM split_assignments
+               WHERE split_name LIKE '%_oof_fold%'
+                 AND group_key NOT LIKE 'stage_contract_v1|%'"""
+        ).fetchone()[0]
+        assert non_strict == 0
     with audit_csv.open(encoding="utf-8-sig", newline="") as handle:
         assert len(list(csv.DictReader(handle))) == 5
     assert json.loads(summary_json.read_text(encoding="utf-8"))["oof_validation_coverage_n"] == 30

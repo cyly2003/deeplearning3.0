@@ -147,7 +147,12 @@ def build_oof_splits(
                         seed,
                         "paired_direct_oof",
                         source_table,
-                        f"e_series_direct|fold={fold}|part={part}|target={TARGET_NAME}",
+                        _stage_contract(
+                            stage=f"e_series_direct_fold{fold}_{part}",
+                            medium_domain="soil",
+                            target_name=TARGET_NAME,
+                            target_family=TARGET_FAMILY,
+                        ),
                     )
                 )
 
@@ -158,7 +163,12 @@ def build_oof_splits(
                 identity = str(row["aggregate_id"])
                 if parent_part == "finetune_mgkg":
                     part = "valid" if identity in valid_ids else "finetune_mgkg"
-                    group_key = f"e_series_transfer_stage3|fold={fold}|part={part}|target={TARGET_NAME}"
+                    group_key = _stage_contract(
+                        stage=f"e_series_transfer_fold{fold}_{part}",
+                        medium_domain="soil",
+                        target_name=TARGET_NAME,
+                        target_family=TARGET_FAMILY,
+                    )
                 else:
                     part = parent_part
                     group_key = str(row["group_key"] or "")
@@ -343,6 +353,24 @@ def _stable_hash(values: Any) -> str:
         digest.update(value.encode("utf-8"))
         digest.update(b"\n")
     return digest.hexdigest()
+
+
+def _stage_contract(
+    *,
+    stage: str,
+    medium_domain: str,
+    target_name: str,
+    target_family: str,
+) -> str:
+    return "|".join(
+        (
+            "stage_contract_v1",
+            f"stage={stage}",
+            f"medium_domain={medium_domain}",
+            f"target_name={target_name}",
+            f"target_family={target_family}",
+        )
+    )
 
 
 if __name__ == "__main__":
