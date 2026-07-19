@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.build_v1_2_43_g_splits import build_g_splits
+from scripts.build_v1_2_43_g_splits import build_g_splits, load_target_metadata
 from scripts.build_v1_2_43_g_splits import stage_contract, stage_sample_record_id
 from scripts.summarize_v1_2_43_g_series import (
     assert_final_boundaries,
@@ -268,6 +268,37 @@ def make_test_winner_lock(tmp_path: Path, *, selection: dict[str, object]) -> Pa
     return lock_path
 
 
+def test_locked_target_metadata_resolves_integer_sqlite_aggregate_ids(tmp_path: Path) -> None:
+    db = tmp_path / "integer_aggregate_ids.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """CREATE TABLE paired (
+                aggregate_id,
+                task_head,
+                target_name,
+                target_family,
+                medium_domain,
+                target_value_median,
+                result_ids
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO paired VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                101,
+                "NOEC_GeneticDamage",
+                "neg_log10_mol_kg",
+                "solid_neglog_mol_kg",
+                "soil",
+                2.0,
+                '["result-101"]',
+            ),
+        )
+        conn.row_factory = sqlite3.Row
+        metadata = load_target_metadata(conn, "paired", {"101"})
+    assert metadata["101"]["task_head"] == "NOEC_GeneticDamage"
+
+
 def test_g_split_builder_rotates_validation_and_delays_outer_test(tmp_path: Path) -> None:
     db, baseline_root, old_train, old_valid, outer_test = make_split_fixture(tmp_path)
     screen = call_builder(tmp_path, db=db, baseline_root=baseline_root, phase="screen")
@@ -450,6 +481,28 @@ def test_parent_stage3_filter_ineligible_rare_route_is_audited(tmp_path: Path) -
     assert summary["parent_stage3_task_filter_excluded_by_task"] == {
         "task_rare|solid_neglog_mol_kg": 1
     }
+    exclusions = summary["parent_stage3_task_filter_exclusion_records"]
+    assert exclusions == [
+        {
+            "aggregate_id": identity,
+            "record_id": stage_sample_record_id(
+                identity, "soil", "neg_log10_mol_kg", "solid_neglog_mol_kg"
+            ),
+            "task_route": "task_rare|solid_neglog_mol_kg",
+            "raw_route_support_n": 1,
+            "task_filter_min_total": 200,
+            "reason": "entire_task_route_absent_from_v1_2_40_baseline_and_raw_support_lt_min_total",
+            "canonical_sha256": exclusions[0]["canonical_sha256"],
+        }
+    ]
+    assert len(exclusions[0]["canonical_sha256"]) == 64
+    exclusion_audit = Path(str(summary["parent_stage3_task_filter_exclusion_audit_csv"]))
+    assert exclusion_audit.is_file()
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT COUNT(1) FROM split_assignments WHERE split_name='g_screen' AND aggregate_id=?",
+            (identity,),
+        ).fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("result_ids", [None, "", "not-json", "[]", '"scalar"'])
@@ -489,7 +542,7 @@ def test_parent_stage3_wrong_target_contract_fails_closed(tmp_path: Path) -> Non
             "UPDATE paired SET target_name='neg_log10_mg_kg' WHERE aggregate_id='old-train-000'"
         )
         conn.commit()
-    with pytest.raises(ValueError, match="outside the locked soil mol/kg target contract"):
+    with pytest.raises(ValueError, match="effective baseline sample set is absent"):
         call_builder(tmp_path, db=db, baseline_root=baseline_root, phase="screen")
 
 

@@ -164,11 +164,19 @@ def build_g_splits(
             )
 
         metadata = load_target_metadata(conn, source_table, stage3_ids)
-        missing_metadata = sorted(stage3_ids - set(metadata))
-        if missing_metadata:
+        missing_effective_metadata = sorted(baseline_ids - set(metadata))
+        if missing_effective_metadata:
             raise ValueError(
-                "Parent stage-3 contains rows outside the locked soil mol/kg target contract: "
-                f"{missing_metadata[:5]}"
+                "The effective baseline sample set is absent from the locked soil "
+                "mol/kg source target: "
+                f"{missing_effective_metadata[:5]}"
+            )
+        missing_parent_metadata = sorted(stage3_ids - set(metadata))
+        if missing_parent_metadata:
+            raise ValueError(
+                "Parent stage-3 contains rows outside the locked soil mol/kg "
+                "source target: "
+                f"{missing_parent_metadata[:5]}"
             )
         assert_parent_stage3_contract(stage3_rows, metadata=metadata)
         # The parent assignment table is intentionally raw.  Deep training then
@@ -192,6 +200,15 @@ def build_g_splits(
                 "eligible for its locked task filter: "
                 f"{unexplained_parent_only[:5]}"
             )
+        parent_stage3_row_by_id = {
+            str(row["aggregate_id"]): row for row in stage3_rows
+        }
+        task_filter_exclusions = build_task_filter_exclusion_records(
+            parent_only_ids,
+            parent_stage3_row_by_id=parent_stage3_row_by_id,
+            metadata=metadata,
+            raw_task_counts=raw_task_counts,
+        )
         effective_stage3_rows = [
             row for row in stage3_rows if str(row["aggregate_id"]) in baseline_ids
         ]
@@ -338,6 +355,7 @@ def build_g_splits(
                 source_table=source_table,
                 validation_seed=validation_seed,
                 new_validation_ids=new_validation_ids,
+                excluded_stage3_ids=parent_only_ids,
                 include_test=False,
             )
             replace_assignments(conn, screen_split, source_table, screen_assignments)
@@ -365,6 +383,7 @@ def build_g_splits(
                 source_table=source_table,
                 validation_seed=validation_seed,
                 new_validation_ids=new_validation_ids,
+                excluded_stage3_ids=parent_only_ids,
                 include_test=True,
             )
             replace_assignments(conn, final_split, source_table, final_assignments)
@@ -390,7 +409,7 @@ def build_g_splits(
             conn,
             split_name=built_split_name,
             source_table=source_table,
-            expected_record_ids=parent_stage3_record_ids,
+            expected_record_ids=effective_parent_record_ids,
             expected_validation_ids=new_validation_ids,
         )
         conn.commit()
@@ -400,6 +419,10 @@ def build_g_splits(
         writer = csv.DictWriter(handle, fieldnames=list(audit_rows[0]))
         writer.writeheader()
         writer.writerows(audit_rows)
+    exclusion_audit_csv = audit_csv.with_name(
+        f"{audit_csv.stem}_task_filter_exclusions.csv"
+    )
+    write_task_filter_exclusion_audit(exclusion_audit_csv, task_filter_exclusions)
 
     summary = {
         "schema": "v1_2_43_g_split_v1",
@@ -431,14 +454,28 @@ def build_g_splits(
         "parent_stage3_raw_n": len(stage3_ids),
         "parent_stage3_aggregate_id_sha256": stable_hash(stage3_ids),
         "parent_stage3_record_id_sha256": stable_hash(parent_stage3_record_ids),
+        "parent_stage3_effective_n": len(effective_stage3_rows),
+        "parent_stage3_effective_record_id_sha256": stable_hash(
+            effective_parent_record_ids
+        ),
         "parent_stage3_task_filter_min_total": TASK_FILTER_MIN_TOTAL,
         "parent_stage3_task_filter_excluded_n": len(parent_only_ids),
         "parent_stage3_task_filter_excluded_aggregate_id_sha256": stable_hash(
             parent_only_ids
         ),
         "parent_stage3_task_filter_excluded_by_task": dict(
-            sorted(Counter(task_key(metadata[identity]) for identity in parent_only_ids).items())
+            sorted(
+                Counter(
+                    str(record["task_route"])
+                    for record in task_filter_exclusions
+                ).items()
+            )
         ),
+        "parent_stage3_task_filter_exclusion_records": task_filter_exclusions,
+        "parent_stage3_task_filter_exclusion_records_canonical_sha256": canonical_sha256(
+            task_filter_exclusions
+        ),
+        "parent_stage3_task_filter_exclusion_audit_csv": str(exclusion_audit_csv),
         "parent_stage3_scientific_identity_sha256": canonical_sha256(
             list(parent_scientific_by_id.values())
         ),
@@ -854,7 +891,7 @@ def load_target_metadata(
                     WHERE aggregate_id IN ({placeholders})
                       AND target_name = ? AND target_family = ? AND medium_domain = 'soil'
                     ORDER BY aggregate_id''',
-                (*chunk, TARGET_NAME, TARGET_FAMILY),
+                (*[coerce_sqlite_id(identity) for identity in chunk], TARGET_NAME, TARGET_FAMILY),
             ).fetchall()
         )
     metadata: dict[str, dict[str, Any]] = {}
@@ -873,6 +910,14 @@ def load_target_metadata(
             "result_ids": tuple(parse_result_ids(row["result_ids"])),
         }
     return metadata
+
+
+def coerce_sqlite_id(value: Any) -> int | str:
+    text = str(value).strip()
+    try:
+        return int(text)
+    except ValueError:
+        return text
 
 
 def stratified_quantile_sample(
@@ -975,6 +1020,7 @@ def build_assignments(
     source_table: str,
     validation_seed: int,
     new_validation_ids: set[str],
+    excluded_stage3_ids: set[str],
     include_test: bool,
 ) -> list[tuple[str, str, str, str, int, str, str, str]]:
     assignments: list[tuple[str, str, str, str, int, str, str, str]] = []
@@ -983,6 +1029,8 @@ def build_assignments(
         if parent_part == "test" and not include_test:
             continue
         identity = str(row["aggregate_id"])
+        if parent_part == "finetune_mgkg" and identity in excluded_stage3_ids:
+            continue
         part = "valid" if parent_part == "finetune_mgkg" and identity in new_validation_ids else parent_part
         group_key = str(row["group_key"] or "")
         if part == "valid":
@@ -1005,6 +1053,55 @@ def build_assignments(
             )
         )
     return assignments
+
+
+def build_task_filter_exclusion_records(
+    identities: set[str],
+    *,
+    parent_stage3_row_by_id: dict[str, sqlite3.Row],
+    metadata: dict[str, dict[str, Any]],
+    raw_task_counts: Counter[str],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for identity in sorted(identities):
+        meta = metadata[identity]
+        route = task_key(meta)
+        raw_support = int(raw_task_counts[route])
+        if raw_support >= TASK_FILTER_MIN_TOTAL:
+            raise ValueError(
+                "Task-filter exclusion record does not satisfy the locked support "
+                f"threshold: aggregate_id={identity} route={route} support={raw_support}"
+            )
+        record = {
+            "aggregate_id": identity,
+            "record_id": str(parent_stage3_row_by_id[identity]["record_id"]),
+            "task_route": route,
+            "raw_route_support_n": raw_support,
+            "task_filter_min_total": TASK_FILTER_MIN_TOTAL,
+            "reason": "entire_task_route_absent_from_v1_2_40_baseline_and_raw_support_lt_min_total",
+        }
+        record["canonical_sha256"] = canonical_sha256(record)
+        records.append(record)
+    return records
+
+
+def write_task_filter_exclusion_audit(
+    path: Path,
+    records: list[dict[str, Any]],
+) -> None:
+    fieldnames = [
+        "aggregate_id",
+        "record_id",
+        "task_route",
+        "raw_route_support_n",
+        "task_filter_min_total",
+        "reason",
+        "canonical_sha256",
+    ]
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(records)
 
 
 def replace_assignments(
