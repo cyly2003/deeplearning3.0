@@ -397,8 +397,59 @@ def test_parent_stage3_extra_identity_fails_closed(tmp_path: Path) -> None:
             ),
         )
         conn.commit()
-    with pytest.raises(ValueError, match="aggregate populations differ"):
+    with pytest.raises(ValueError, match="eligible for its locked task filter"):
         call_builder(tmp_path, db=db, baseline_root=baseline_root, phase="screen")
+
+
+def test_parent_stage3_filter_ineligible_rare_route_is_audited(tmp_path: Path) -> None:
+    db, baseline_root, _, _, _ = make_split_fixture(tmp_path)
+    identity = "parent-filtered-rare"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO paired VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                identity,
+                "task_rare",
+                "neg_log10_mol_kg",
+                "solid_neglog_mol_kg",
+                "soil",
+                2.5,
+                json.dumps(["result-parent-filtered-rare"]),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO split_assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "parent",
+                stage_sample_record_id(
+                    identity, "soil", "neg_log10_mol_kg", "solid_neglog_mol_kg"
+                ),
+                identity,
+                "finetune_mgkg",
+                42,
+                "parent",
+                "paired",
+                stage_contract(
+                    stage="fixture_filtered_rare",
+                    medium_domain="soil",
+                    target_name="neg_log10_mol_kg",
+                    target_family="solid_neglog_mol_kg",
+                ),
+            ),
+        )
+        conn.commit()
+
+    summary = call_builder(
+        tmp_path,
+        db=db,
+        baseline_root=baseline_root,
+        phase="screen",
+    )
+
+    assert summary["parent_stage3_task_filter_excluded_n"] == 1
+    assert summary["parent_stage3_task_filter_excluded_by_task"] == {
+        "task_rare|solid_neglog_mol_kg": 1
+    }
 
 
 @pytest.mark.parametrize("result_ids", [None, "", "not-json", "[]", '"scalar"'])

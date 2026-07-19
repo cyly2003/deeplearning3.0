@@ -16,6 +16,7 @@ TARGET_NAME = "neg_log10_mol_kg"
 TARGET_FAMILY = "solid_neglog_mol_kg"
 OLD_VALIDATION_PART = "finetune_mgkg_validation"
 OLD_TRAIN_PART = "finetune_mgkg"
+TASK_FILTER_MIN_TOTAL = 200
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -155,12 +156,11 @@ def build_g_splits(
         if len(parent_stage3_record_ids) != len(stage3_rows):
             raise ValueError("Parent stage-3 contains duplicate record assignments.")
         baseline_ids = old_train_ids | old_validation_ids
-        if baseline_ids != stage3_ids:
-            missing_parent = sorted(baseline_ids - stage3_ids)
-            parent_extras = sorted(stage3_ids - baseline_ids)
+        baseline_only = sorted(baseline_ids - stage3_ids)
+        if baseline_only:
             raise ValueError(
-                "Old baseline and parent stage-3 aggregate populations differ: "
-                f"baseline_only={missing_parent[:5]} parent_only={parent_extras[:5]}"
+                "Old baseline contains aggregates outside the parent stage-3 split: "
+                f"{baseline_only[:5]}"
             )
 
         metadata = load_target_metadata(conn, source_table, stage3_ids)
@@ -171,23 +171,50 @@ def build_g_splits(
                 f"{missing_metadata[:5]}"
             )
         assert_parent_stage3_contract(stage3_rows, metadata=metadata)
+        # The parent assignment table is intentionally raw.  Deep training then
+        # applies the configured task-route support filter (min_total=200), so a
+        # handful of rare routes never appeared in the v1.2.40 predictions.  We
+        # retain those raw assignments for exact split reproduction, but only
+        # accept a parent-only row when its entire route is absent from the
+        # effective baseline and its raw support is below the locked threshold.
+        parent_only_ids = stage3_ids - baseline_ids
+        raw_task_counts = Counter(task_key(metadata[identity]) for identity in stage3_ids)
+        baseline_task_keys = {task_key(metadata[identity]) for identity in baseline_ids}
+        unexplained_parent_only = sorted(
+            identity
+            for identity in parent_only_ids
+            if task_key(metadata[identity]) in baseline_task_keys
+            or raw_task_counts[task_key(metadata[identity])] >= TASK_FILTER_MIN_TOTAL
+        )
+        if unexplained_parent_only:
+            raise ValueError(
+                "Parent stage-3 rows are missing from the baseline despite being "
+                "eligible for its locked task filter: "
+                f"{unexplained_parent_only[:5]}"
+            )
+        effective_stage3_rows = [
+            row for row in stage3_rows if str(row["aggregate_id"]) in baseline_ids
+        ]
         parent_scientific_by_id = parent_stage3_scientific_identities(
-            stage3_rows,
+            effective_stage3_rows,
             metadata=metadata,
         )
+        effective_parent_record_ids = {
+            str(row["record_id"]) for row in effective_stage3_rows
+        }
         baseline_record_ids = {
             str(item["record_id"])
             for item in baseline_scientific_by_id.values()
         }
-        if baseline_record_ids != parent_stage3_record_ids:
+        if baseline_record_ids != effective_parent_record_ids:
             raise ValueError(
-                "Old baseline and parent stage-3 record populations differ: "
-                f"baseline_only={sorted(baseline_record_ids - parent_stage3_record_ids)[:5]} "
-                f"parent_only={sorted(parent_stage3_record_ids - baseline_record_ids)[:5]}"
+                "Old baseline and effective parent stage-3 record populations differ: "
+                f"baseline_only={sorted(baseline_record_ids - effective_parent_record_ids)[:5]} "
+                f"parent_only={sorted(effective_parent_record_ids - baseline_record_ids)[:5]}"
             )
         scientific_mismatches = [
             identity
-            for identity in sorted(stage3_ids)
+            for identity in sorted(baseline_ids)
             if baseline_scientific_by_id[identity] != parent_scientific_by_id[identity]
         ]
         if scientific_mismatches:
@@ -201,7 +228,7 @@ def build_g_splits(
             for identity in old_validation_ids
             for result_id in metadata[identity]["result_ids"]
         }
-        component_by_identity = aggregate_result_components(stage3_ids, metadata=metadata)
+        component_by_identity = aggregate_result_components(baseline_ids, metadata=metadata)
         eligible_pool = {
             identity
             for identity in old_train_ids
@@ -241,7 +268,7 @@ def build_g_splits(
                 f"{sorted(result_overlap)[:5]}"
             )
 
-        raw_stage3_train_ids = stage3_ids - new_validation_ids
+        raw_stage3_train_ids = baseline_ids - new_validation_ids
         raw_stage3_train_result_ids = {
             result_id
             for identity in raw_stage3_train_ids
@@ -404,6 +431,14 @@ def build_g_splits(
         "parent_stage3_raw_n": len(stage3_ids),
         "parent_stage3_aggregate_id_sha256": stable_hash(stage3_ids),
         "parent_stage3_record_id_sha256": stable_hash(parent_stage3_record_ids),
+        "parent_stage3_task_filter_min_total": TASK_FILTER_MIN_TOTAL,
+        "parent_stage3_task_filter_excluded_n": len(parent_only_ids),
+        "parent_stage3_task_filter_excluded_aggregate_id_sha256": stable_hash(
+            parent_only_ids
+        ),
+        "parent_stage3_task_filter_excluded_by_task": dict(
+            sorted(Counter(task_key(metadata[identity]) for identity in parent_only_ids).items())
+        ),
         "parent_stage3_scientific_identity_sha256": canonical_sha256(
             list(parent_scientific_by_id.values())
         ),
