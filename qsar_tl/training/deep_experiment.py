@@ -735,6 +735,9 @@ def run_deep_experiment(
         start_epoch_override=swa_start_epoch,
         phase_override=swa_phase,
     )
+    requested_stage1_epochs = int(
+        epochs if epochs is not None else train_cfg.get("epochs", 5)
+    )
     requested_finetune_epochs = int(
         finetune_epochs if finetune_epochs is not None else finetune_cfg.get("epochs", 0)
     )
@@ -875,14 +878,14 @@ def run_deep_experiment(
         for _, row in frame.iterrows()
     ]
     train_indices = [idx for idx, sample in enumerate(split_probe_samples) if sample["split_part"] == "train"]
-    if not train_indices:
-        raise ValueError("No train samples found for deep experiment.")
-    actual_train_indices, validation_indices, validation_source = split_training_validation_indices(
+    actual_train_indices, validation_indices, validation_source = resolve_stage1_training_boundary(
         split_probe_samples,
         train_indices=train_indices,
         seed=int(seed if validation_seed is None else validation_seed),
         validation_fraction=early_cfg["validation_fraction"],
         monitor_split=early_cfg["monitor_split"],
+        requested_epochs=requested_stage1_epochs,
+        downstream_training_requested=bool(finetune_requested or finetune_mgkg_requested),
     )
     early_enabled = bool(early_cfg["enabled"] and validation_indices)
     if not early_enabled:
@@ -1164,7 +1167,7 @@ def run_deep_experiment(
         task_heads=task_heads,
     )
     train_config = DeepTrainingConfig(
-        epochs=int(epochs or train_cfg.get("epochs", 5)),
+        epochs=requested_stage1_epochs,
         batch_size=int(batch_size or train_cfg.get("batch_size", 256)),
         learning_rate=float(learning_rate if learning_rate is not None else train_cfg.get("learning_rate", 3e-4)),
         huber_delta=float(loss_cfg.get("delta", 1.0)),
@@ -1439,12 +1442,16 @@ def run_deep_experiment(
     swa_updates = 0
     swa_last_global_epoch = 0
     swa_applied = False
-    dataloader = DataLoader(
-        train_dataset,
-        batch_size=train_config.batch_size,
-        shuffle=True,
-        collate_fn=collate_aggregated_task_batch,
-        **dataloader_runtime_options(torch_device, train_config.num_workers),
+    dataloader = (
+        DataLoader(
+            train_dataset,
+            batch_size=train_config.batch_size,
+            shuffle=True,
+            collate_fn=collate_aggregated_task_batch,
+            **dataloader_runtime_options(torch_device, train_config.num_workers),
+        )
+        if actual_train_indices
+        else None
     )
     validation_loader = (
         DataLoader(
@@ -1493,6 +1500,8 @@ def run_deep_experiment(
     no_improve_epochs = 0
     pretrain_epochs = 0 if finetune_mgkg_checkpoint_loaded else train_config.epochs
     for epoch in range(1, pretrain_epochs + 1):
+        if dataloader is None:
+            raise RuntimeError("Stage-1 epochs were requested without a Stage-1 dataloader.")
         epoch_loss = train_one_epoch(
             model,
             dataloader,
@@ -5311,6 +5320,37 @@ def split_training_validation_indices(
     validation_set = set(validation)
     actual_train = [idx for idx in train_indices if idx not in validation_set]
     return actual_train, sorted(validation), "internal_train_fraction" if validation else ""
+
+
+def resolve_stage1_training_boundary(
+    samples: list[dict[str, Any]],
+    *,
+    train_indices: list[int],
+    seed: int,
+    validation_fraction: float,
+    monitor_split: str,
+    requested_epochs: int,
+    downstream_training_requested: bool,
+) -> tuple[list[int], list[int], str]:
+    """Allow a strict Stage-3-only run without inventing Stage-1 samples.
+
+    A missing Stage-1 boundary remains an error whenever Stage 1 has positive
+    epochs or no downstream phase is requested.  This keeps ordinary deep
+    experiments fail-closed while permitting the M00 causal control to fit all
+    preprocessing and model parameters from the explicit Stage-3 train rows.
+    """
+
+    if train_indices:
+        return split_training_validation_indices(
+            samples,
+            train_indices=train_indices,
+            seed=seed,
+            validation_fraction=validation_fraction,
+            monitor_split=monitor_split,
+        )
+    if int(requested_epochs) > 0 or not downstream_training_requested:
+        raise ValueError("No train samples found for deep experiment.")
+    return [], [], ""
 
 
 def resolve_stage1_monitor_split(

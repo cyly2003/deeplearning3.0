@@ -5,6 +5,170 @@ experiments. Use it with `docs/experiment_registry.csv`: the registry stores
 where each result lives, while this log records why each strategy was kept or
 stopped.
 
+## Fixed-boundary traditional-ML comparison (2026-07-24)
+
+- v1.2.53 compares RF, XGBoost, LightGBM, PLS, and KNN with the current deep
+  routes on the locked v1.2.44 random-interpolation boundary. Traditional
+  models receive no species/task embedding and do not pool records across
+  species: every model is fitted independently for one
+  `latin_name x model_head` species-endpoint subtask.
+- A support contract of at least 35/10/10 train/validation/test records was
+  locked before fitting. Forty-one subtasks pass, yielding the same 1,135
+  outer-test rows for every model and feature contract (37.31% of the complete
+  3,042-row test set). Unsupported subtasks are audited rather than silently
+  removed.
+- Layer 1 asks about the whole-framework advantage: molecule-only traditional
+  models are compared with M11U. The best traditional baseline is XGBoost
+  (R2=0.6039, MAE=0.5895), versus M11U R2=0.7358 and MAE=0.4935.
+  The paired deltas are +0.1319 R2 (95% CI 0.1001 to 0.1655) and -0.0960 MAE
+  (95% CI -0.1201 to -0.0726).
+- Layer 2 asks about architecture/training-system advantage under matched
+  molecule-plus-context inputs. RF has the best traditional R2 (0.6407) and
+  XGBoost the best traditional MAE (0.5517), versus M00 R2=0.7107 and
+  MAE=0.5226. M00 improves R2 over RF by 0.0700 (95% CI 0.0386 to 0.1023) and
+  MAE over XGBoost by 0.0291 in the beneficial direction (95% CI 0.0043 to
+  0.0547).
+- Inference uses 20,000 record-paired bootstrap resamples stratified within
+  species-endpoint subtasks, followed by Holm adjustment across the five
+  traditional baselines. Reference and test identifiers are provenance only;
+  no reference/test aggregation enters model fitting, splitting, tuning, or
+  uncertainty estimation. Both metrics favor the deep route significantly
+  against all five baselines in both layers after correction.
+- The single four-panel publication figure combines absolute R2/MAE bars with
+  R2-gain and MAE-reduction heatmaps. Stars appear only for favorable,
+  Holm-adjusted significant cells; nonsignificant labels are omitted.
+- These results support random-interpolation claims only for the 41 adequately
+  supported species-endpoint subtasks. They do not establish generalization to
+  unseen species, unseen endpoints, or unseen chemical structure families.
+
+## Scaffold/similarity-family chemical-extrapolation follow-up (2026-07-21)
+
+- v1.2.47 is a separate boundary test for unseen chemical structure families.
+  It reuses the locked v1.2.44 Stage-3 parent pool but does not reuse the
+  random or reference-group target assignment. References, species, and tasks
+  may cross partitions; chemical structure components may not.
+- Structures are normalized to the largest carbon-containing uncharged parent,
+  then linked by exact canonical identity, shared non-empty Murcko scaffold, or
+  any direct Morgan radius-2/2048-bit Tanimoto >=0.65 edge. After excluding
+  invalid/non-organic structures, the target pool contains 11,267 rows, 581
+  canonical chemicals, and 316 transitive structure components.
+- The locked Stage-3 boundary contains 7,322/1,651/2,294
+  train/validation/test rows and 189/61/66 components. All canonical,
+  scaffold, component, aggregate, result, and test-identifier overlaps are
+  zero; the largest cross-part Tanimoto is 0.6364.
+- None of 4,096 raw prediction-blind hash candidates met every hard task gate
+  because ICx_Growth has only 51 structure-resolved rows. Before any model was
+  trained, the best 64 candidates were subjected to deterministic whole-
+  component constraint repair using only support deficits, ratio and identity
+  gates, and target-distribution balance. Fifty-four became feasible. The
+  selected seed is 20261729, and its four component moves are recorded in the
+  immutable split contract; no threshold was relaxed and no component split.
+- Stage-1/2 source rows are independently removed when their canonical parent
+  or non-empty scaffold overlaps target validation/test, or their Morgan
+  similarity to either target holdout is >=0.65. The retained source has
+  130,045 aquatic rows and 6,455 soil-pTox rows. Its maximum similarity to the
+  held-out target structures is 0.6471; exact aggregate/result/test and
+  canonical/scaffold overlaps are zero.
+- The contract hash is
+  `5acc398a4bc9215fa4972511156106e1f0461f9ff1b7a6ef13cd25fd884cc755`.
+  Local and remote protocol/regression tests passed (20 tests), and all M00,
+  M10, and M11U one-epoch smoke cells passed at 2026-07-21 10:40:41 (+08:00).
+- The formal M00/M10/M11U x four-seed matrix started at 10:40:50 (+08:00)
+  with two concurrent jobs. Stage 3 is full-network finetuning with explicit
+  validation; test is report-only. On completion, 20,000 paired bootstrap
+  resamples will use target-test structure components, with a +/-0.01 MAE
+  practical-equivalence margin for M10 versus M11U. The two predeclared
+  low-support tasks report task MAE/RMSE but not task-level R2.
+
+## Reference-group boundary follow-up (2026-07-20)
+
+- The paired v1.2.45 reference-component bootstrap is complete on the same
+  3,042 v1.2.44 test rows, using 917 transitive reference components and 20,000
+  resamples. M10 improved MAE over strict M00 by 0.03345 (95% CI 0.02427 to
+  0.04289 in the beneficial direction).
+- M11U minus M10 had delta MAE=-0.00111 with 95% CI [-0.00717, 0.00496]. The
+  full interval lies inside the predeclared +/-0.01 practical-equivalence
+  margin. Therefore the default scientific interpretation is that soil-pTox
+  intermediate adaptation adds no practically meaningful performance after
+  aquatic pretraining on the locked random boundary.
+- v1.2.46 is the single boundary validation selected after v1.2.44. All records
+  connected through shared reference identifiers are assigned to only one of
+  Stage-3 train, validation, or test. The locked counts are 9,809/2,516/2,874
+  records and 854/217/291 reference components across 18 tasks. Source-domain
+  Stage-1/2 records sharing a reference with target validation or test were
+  removed; no CAS-, SMILES-, scaffold-, species-, or task-disjoint claim is
+  introduced.
+- The v1.2.46 matrix contains only M00, M10, and M11U with seeds 42, 2042,
+  3407, and 8417. Stage 3 uses full-network finetuning (`freeze=none`) with an
+  explicit validation split. The test partition remains report-only and is not
+  used for stopping, route selection, or formal-run monitoring.
+- Local and remote protocol tests both reported 34 passed. All three 1-epoch
+  smoke cells passed at 2026-07-20 19:39 (+08:00), after which the formal
+  12-cell matrix started automatically. All 12 cells completed at 22:30:34
+  (+08:00), with 12 manifests and 12 prediction exports. The controller exited
+  normally; the log is
+  `outputs/logs/v1_2_46_reference_group_gate_20260720_185905.log`.
+- On the 2,874-row reference-group test ensemble, M00/M10/M11U obtained R2
+  0.1710/0.2302/0.2243, RMSE 1.2092/1.1652/1.1697, and MAE
+  0.8986/0.8649/0.8668. M10 improved MAE over M00 by 0.0337 and was better in
+  14 of 18 task heads. M11U was slightly worse than M10 overall (delta R2
+  -0.0059; delta MAE +0.0019) and improved only 8 of 18 task-head MAEs.
+- The boundary result therefore preserves the qualitative causal conclusion:
+  aquatic pretraining supplies useful transferable initialization, whereas
+  soil-pTox intermediate adaptation does not add measurable value after that
+  pretraining. The sharp absolute-performance decline relative to v1.2.44 also
+  identifies study-source and experimental-condition heterogeneity as an
+  important generalization limitation. Because the random and reference-group
+  test identities differ, their numerical gap is descriptive rather than a
+  paired causal estimate.
+- This experiment estimates robustness to new study/reference sources and
+  associated experimental-condition heterogeneity. It is not evidence of new
+  chemical-scaffold or new-species extrapolation and will be reported
+  separately from the v1.2.44 random-interpolation result.
+
+## Current soil mol/kg three-stage mainline (2026-07-20)
+
+- The active target reference is `v1.2.40 X0_molar`, not the E- or G-series
+  explorations. The latter are excluded from v1.2.44 splits, checkpoints,
+  thresholds, model initialization, and final aggregation.
+- The v1.2.40 Stage-3 trunk was not frozen: its effective setting was
+  `finetune_mgkg_freeze=none` with one unified learning rate. Therefore the
+  new `M11U` cell reproduces the current v1.2.40 strategy, while `M11F` is the
+  newly added true heads-only frozen-trunk control.
+- The causal matrix is locked to the same 18-task Stage-3 boundary for every
+  cell: 9,724 target-train, 2,433 validation, and 3,042 test records. M00, M10,
+  M01, and M11 have the identical Stage-3 boundary hash.
+- M10 and M01 use the task set already admitted by the v1.2.40 full route.
+  Their internal task thresholds are disabled only after that admission step,
+  preventing removal of a pretraining stage from also changing the task set.
+  M10 reproduces the exact M11 Stage-1 identities; M01 reproduces the exact
+  M11 Stage-2 identities.
+- The historical v1.2.40 `D_molar` run was rejected as strict M00 evidence:
+  it merged 12,157 Stage-3 development rows and reconstructed validation with
+  seed 17073, instead of the locked 9,724/2,433 boundary with seed 42. The
+  training engine was corrected to preserve explicit `epochs=0` and to permit
+  an empty Stage 1 only for a requested downstream-only route. Strict M00 was
+  then retrained on the fixed boundary.
+- All 28 formal cells (seven trained cells times four seeds) completed on
+  2026-07-20 at 16:41 (+08:00). There are 28 validated manifests and prediction
+  exports, and both local and remote targeted suites report 28 passed tests.
+- B1 uses the newly reproduced M11U as the within-matrix causal reference and
+  separately reports agreement with the completed v1.2.40 X0_molar runs. B2
+  reports both ordinary R2 and within-task centered R2. B3 compares molar and
+  mass training only after conversion to the same reporting scale and includes
+  error-versus-logMW diagnostics.
+- On the four-seed rowwise test ensemble, M11U reached R2=0.7153 and MAE=0.5447.
+  M10 was effectively tied (R2=0.7154, MAE=0.5458), so soil-pTox adaptation has
+  little overall independent gain. M01 (R2=0.6701, MAE=0.5879) and strict M00
+  (R2=0.6801, MAE=0.5792) show that aquatic pretraining is the main transfer
+  source. M11F strongly degraded (R2=0.3521, MAE=0.8830); full Stage-3
+  finetuning is retained.
+- Full-model within-task R2=0.6817, versus 0.2997 for Context-only and 0.4924
+  for Molecule-only, supporting genuine within-task molecular signal. On the
+  common mg/kg scale, Scale-Mol modestly outperformed Scale-Mass
+  (R2 0.6855 vs 0.6794; MAE 0.5441 vs 0.5498), but the row-level association
+  of its gain with logMW was weak (r=0.0424).
+
 ## Current Mainline
 
 The current reporting boundary is split-dependent. Do not answer the current
@@ -667,3 +831,134 @@ with `selected_candidate=null`; expansion seeds 2042 and 8417 were not run and
 the outer test remained unread. The result rejects these prediction-level
 adaptation heads as replacements for the frozen Transfer anchor under the
 current gate, but does not invalidate the v1.2.40 full-fit outer-test result.
+
+### 2026-07-23 v1.2.44 M10 applicability-domain decision
+
+The locked v1.2.44 random Stage-3 boundary was audited without retraining. The
+primary route was the four-seed M10 prediction-level ensemble and M00 was the
+fixed comparator; all results remain on the native `neg_log10_mol_kg` scale.
+Strict record identities, the 9,724/2,433/3,042 train/validation/test manifests,
+and the registered M10/M00 metrics were reproduced before support analysis.
+
+Chemical support used radius-2, 2,048-bit Morgan Tanimoto similarity to unique
+canonical parents in Stage-3 training (`C_target`) and Stage-1 fitted source
+records (`C_source`). Same-task taxonomy, a six-field same-task experimental
+context distance, relative task-head support, and joint local Stage-3 training
+record counts completed the C/B/T/L description. Structure-unavailable records
+remained an explicit state rather than being assigned similarity zero.
+
+No one of 384 validation-only candidate rules met the preregistered coverage,
+tier-size and task-composition requirements. Candidate High coverage did not
+exceed 18.29%, and combined High+Moderate coverage did not exceed 49.98%. The
+strict locked descriptive rule retained 54 validation and 54 outer-test High
+records. Aggregate validation and test MAE decreased from Low/outside through
+Moderate to High, but only two test tasks supported a within-task High-versus-Low
+comparison of at least 15 rows per side and only one showed the expected
+direction. The joint support ranking also did not consistently outperform seed
+disagreement for low-coverage error selection.
+
+This is a limitation of the rejection-rule calibration, not evidence that most
+tasks are unreliable. Intermediate and Lower-measured support together cover
+98.2% of test records; their MAEs (0.516 and 0.579) differ from the full-test MAE
+(0.546) by only -0.030 and +0.033. The absence of enough strict-High rows in most
+tasks prevents within-task contrast estimation but does not invalidate those
+tasks. Figures therefore use neutral density labels and show deviations from the
+full-test benchmark rather than a trusted/untrusted visual split.
+
+Decision: report this result as `training-support stratification` or
+`record-level support analysis`, not as a calibrated applicability-domain
+rejection rule. These labels describe measured training support, not model
+pass/fail reliability. The random boundary is chemically interpolation dominated:
+98.3% of structure-available test records have an exact Stage-3 training parent,
+while 24.75% of all test records have no usable organic molecular structure.
+These results do not support new-scaffold, new-family, or universal in-domain
+reliability claims. The immutable rule hash was identical before and after
+outer-test evaluation; the implementation and manuscript-ready outputs are in
+`analysis/applicability_domain/` and its test suite reports 12 passed checks.
+
+The publication presentation was locked on 2026-07-23 without changing any rule,
+record assignment, or metric. Main Figure 5 now uses a two-dimensional
+chemical-versus-bio-context projection with task support encoded by point size,
+occupied-cell conditional-error maps, outer-test-only coverage curves, and
+overlapping stratum error distributions. All panels use parenthesized labels
+`(a)`–`(d)`. Validation curves and seed-disagreement diagnostics were moved to a
+separate supplementary figure. The corresponding bilingual Methods, Results,
+Discussion, Conclusions, Figure 5 legend, Table 2, detailed SI methods/results,
+and production brief were synchronized in
+`三阶段版/论文初稿_v0.4_20260723/`. This change is interpretive and presentational:
+the locked quantitative conclusion remains continuous, modest reliability
+enrichment rather than a binary trusted/untrusted boundary.
+
+### 2026-07-23 revised multidimensional-support statistics and figure package
+
+A stricter, task-stratified reanalysis was completed in `三阶段版/AD/`. It
+retains the locked M10 prediction route and outer-test identities but replaces
+presentation-only reliability tiers with prespecified support cells,
+within-task risk–coverage ranking, validation-derived tied-quantile strata,
+reference-component cluster bootstrap, and within-task permutation tests. The
+legacy `ad_rule_locked.json` was not used for selection and was not modified.
+
+The audit partitioned the 3,042 outer-test records into 2,289 support-computable
+and 753 support-unavailable records. Chemical support for the inferential panels
+is the nearest non-identical Stage-3 training canonical-parent analogue;
+exact-parent occurrence remains a separate composition result. The primary
+joint score is the bottleneck `S_joint_min=min(C,B,T)` and the geometric mean is
+reported only as a sensitivity analysis.
+
+On the task-balanced test risk–coverage analysis, the relative AURC
+(`AURC_support - AURC_paired_random`) was 0.005127 for `S_joint_min`
+(reference-component cluster-bootstrap 95% CI -0.026898 to 0.036651). The
+highest-minus-lowest validation-quantile stratum difference was -0.026105
+task-IQR units (95% CI -0.101137 to 0.037490), and continuous Spearman rho was
+0.011972 (bootstrap 95% CI -0.038461 to 0.063141). These results do not establish
+a stable joint-support prediction-error boundary. Bio-context support alone
+showed lower-error ranking enrichment, with relative AURC -0.036222 (95% CI
+-0.065377 to -0.001298), but this is an association under the current random
+boundary and not a causal or joint-domain effect.
+
+Support-unavailable test records had lower descriptive task-balanced normalized
+MAE than support-computable records (0.258052 versus 0.307797). Missing support
+therefore cannot be merged with measured low support or interpreted as automatic
+unreliability. The reporting decision is to describe continuous multidimensional
+training coverage, disclose the bio-context-only association, and avoid binary
+inside/outside or reliable/unreliable language. The revised main figure uses
+parenthesized `(a1)`, `(a2)`, `(b)`, `(c)`, and `(d)` labels; Figures S1–S10 and
+all figure-ready statistics are part of the same package.
+
+The corresponding Chinese and English main text, Supporting Information, and
+bilingual figure-production brief were backfilled as a versioned `v0.5 AD
+revision` under `三阶段版/AD/manuscript_backfill/`. The previous v0.4 DOCX
+files were preserved. Word-to-PDF rendering of all five revised documents
+produced 46 pages and passed page-by-page visual inspection without clipping,
+overlap, or anomalous page breaks.
+
+### 2026-07-24 M10 random-fivefold and paired target-data learning-curve decision
+
+The v1.2.52 expansion completed all 15 added seed-fold cells and combined them
+with the five existing seed-3407 cells. The fixed task-stratified row-random
+fivefold assignments were not regenerated. Exact-once OOF coverage was verified
+for each seed over 15,199 target records. The four-seed rowwise OOF ensemble
+achieved R2 0.690203, RMSE 0.780621, and MAE 0.561950. Across the four
+single-seed OOF predictions, the mean±SD values were R2 0.669906±0.010273,
+RMSE 0.805715±0.012529, and MAE 0.582087±0.009648. This supports random
+resampling and initialization robustness; it is not scaffold extrapolation
+evidence and is not merged numerically with the fixed 8:2 main score.
+
+The v1.2.54 paired M10/M00 learning curve completed all 32 new cells. The
+10%, 25%, 50%, and 75% Stage-3 train/validation subsets are strictly nested
+within the locked v1.2.44 row-random 8:2 boundary, while all fractions retain
+the same 3,042-row outer test. The 100% M10/M00 anchors reuse the validated
+v1.2.44 four-seed predictions. M10 outperformed M00 in ensemble R2 and MAE at
+every target-data fraction. Task-stratified row-paired bootstrap with 20,000
+replicates gave positive M00-minus-M10 MAE benefits at all five fractions, and
+all five 95% intervals excluded zero.
+
+The inferential decision is deliberately narrower than “enhanced data
+efficiency.” The M10 MAE benefit at 10%, 25%, 50%, 75%, and 100% was
+0.020277, 0.024839, 0.030073, 0.023561, and 0.033448, respectively. None of
+the low-data fractions showed a statistically supported larger benefit than
+the full-data contrast; the 10% and 75% excess-benefit intervals were
+significantly below zero. The manuscript may retain aquatic-assisted or aquatic
+pretraining as a robust incremental improvement that persists in low-data
+settings, but it must not claim that aquatic pretraining becomes stronger as
+soil labels decrease or that enhanced target-data efficiency has been proven.

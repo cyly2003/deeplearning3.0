@@ -1,6 +1,199 @@
 # Project Status
 
-更新时间：2026-07-19 10:20 (+08:00)
+更新时间：2026-07-24 (+08:00)
+
+## 2026-07-24 主线冻结、完整结果回拉与历史清理
+
+- 当前唯一代码主线为 `v1.2.40 X0_molar` 三阶段全参数微调；“约 0.71 R2”严格指
+  四种子逐记录预测集成在固定 random 8:2 外层测试、原生 `neg_log10_mol_kg` 尺度
+  的 R2 `0.7155`，不是单种子指标或 mg/kg 结果。v1.2.44 M11U/M10 的
+  `0.7153/0.7154` 是锁定边界复现与因果验证，不改变主线命名。
+- 已回拉 v1.2.52（187 文件，286,396,169 bytes）及 v1.2.54（391 文件，
+  333,823,929 bytes）的完整正式结果和审计包；本机旧 summary 与远端同名文件
+  SHA-256 一致。近期结果已同步回填至 registry、decision log 和 M10 边界台账。
+- 本机释放约 39.1 GiB 的 v1.2.22 前旧原始运行与 smoke；远端 experiments 由
+  13G 降至 4.0G。具体保留/清理边界见
+  `docs/cleanup_mainline_20260724.md`；不删除当前 SQLite、v1.2.40 正式矩阵或
+  v1.2.44–v1.2.54 的主线证据。
+
+## 2026-07-24 v1.2.53 固定边界传统机器学习对比完成
+
+- 正式比较严格沿用 v1.2.44 的随机插值边界（Stage-3
+  train/validation/test=`9724/2433/3042`，18 个任务头，目标尺度
+  `neg_log10_mol_kg`），但传统模型不使用物种或任务 embedding，也不跨物种共享参数。
+  RF、XGBoost、LightGBM、PLS 和 KNN 均按
+  `latin_name × model_head` 独立建模，即“一个物种的一个确定效应终点一个模型”。
+- 为保证子模型可估计，预先锁定 train>=35、validation>=10、test>=10 的支持门槛；
+  共有 41 个物种—终点子任务通过，覆盖相同的 1,135 条外层测试记录
+  （占完整测试集 37.31%）。未通过门槛的组合保留在审计表中，不作无说明删除。
+- “整体框架优势”层使用仅分子信息传统模型对比完整 M11U。最佳传统基线 XGBoost
+  的 `R2/RMSE/MAE=0.6039/0.8238/0.5895`，M11U 为
+  `0.7358/0.6728/0.4935`；M11U 的 ΔR2=+0.1319
+  （95% CI 0.1001–0.1655），ΔMAE=-0.0960
+  （95% CI -0.1201–-0.0726）。
+- “架构/训练系统优势”层令传统模型与 M00 使用相同的分子+上下文输入。传统模型中
+  RF 的 R2 最佳（0.6407），XGBoost 的 MAE 最佳（0.5517）；M00 为
+  `R2/RMSE/MAE=0.7107/0.7040/0.5226`。相对 RF，M00 的
+  ΔR2=+0.0700（95% CI 0.0386–0.1023）；相对 XGBoost，M00 的
+  ΔMAE=-0.0291（95% CI -0.0547–-0.0043）。
+- 显著性检验采用物种—终点内分层的逐记录配对 bootstrap（20,000 次）并进行 Holm
+  多重比较校正；两层中深度模型相对五个传统基线的 R2 与 MAE 改善均达到校正后
+  `p<0.05`。这里没有使用 reference/test ID 聚合：它们只作为数据溯源字段保留，
+  不参与建模、划分、调参或不确定性估计。
+- 单张四联图同时给出 R2/MAE 绝对性能和两张增益热图，仅对“深度模型方向更优且
+  Holm 校正显著”的单元格加星号；无显著差异时不显示 `ns`。PNG、SVG、PDF 和
+  600-dpi TIFF 及源数据均位于
+  `三阶段版/与传统机器学习算法对比/统一汇总/图表/`。
+- 结论仅适用于这 41 个支持充分子任务上的固定随机插值边界，不能外推为未见物种、
+  未见效应终点或未见结构族的泛化结论。正式 10 个模型—特征单元均完成，本地回归
+  测试 `5 passed`。
+
+## 2026-07-23 v1.2.44 M10 支持度分层完成：整体表现接近，不采用拒绝式 AD
+
+- 按 `三阶段版/01_Codex_Applicability_Domain_Analysis_Handoff_CN.md` 完成固定
+  v1.2.44 随机边界的记录级 C/B/T/L 支持分析；主路线为 M10 四种子逐记录
+  ensemble，对照为 M00，目标尺度保持 `neg_log10_mol_kg`。没有重训模型，也没有
+  将 pTox 结果转换成土壤 mg/kg 风险结论。
+- 锁定的 Stage-3 train/validation/test 为 `9724/2433/3042`、18 个任务头。M10
+  外层测试 `R2/RMSE/MAE=0.715435/0.755177/0.545762`，M00 为
+  `0.680111/0.800678/0.579210`；历史锁定指标最大复现差小于 `5e-11`。
+- 384 个验证集候选中无一同时满足 High coverage `25–50%`、High+Moderate
+  `65–80%`、每层至少 100 条及任务构成约束。严格描述性规则在 validation/test
+  仅保留 `54/54` 条 High（`2.22%/1.78%`）。测试 Intermediate/Lower measured
+  两个大层级合计覆盖 `98.2%`，MAE `0.516/0.579` 相对整体 `0.546` 仅为
+  `-0.030/+0.033`，表明整体表现接近，支持度只提供温和排序信号。
+- 因此正式结论为 `training-support stratification` / `record-level support analysis`。
+  不能把它写成可靠/不可靠的 calibrated AD 拒绝门槛；同样不能把未进入 Strict high
+  解释为任务或预测不可信。仅 2 个任务有足够 Strict-high/Lower-measured 样本，表示
+  严格 High 太稀少而无法逐任务估计梯度。规则仅由 validation 选择并先锁定，外层测试
+  脚本运行前后 SHA-256 完全一致。
+- 随机边界高度偏向化学插值：结构可用测试记录中 `98.3%` 的 canonical parent 已在
+  Stage-3 train 出现；按唯一结构计 parent/scaffold 覆盖为 `93.0%/93.2%`。另有
+  `753/3042=24.75%` 测试记录为 `structure_unavailable`，单独报告且未编码为 C=0。
+- 完整交付位于 `analysis/applicability_domain/`，包括发现与复现报告、记录级 Parquet、
+  validation 候选/Pareto/锁定 JSON、test/任务/迁移增益表、论文方法与结果草稿、中文
+  摘要和蓝—青绿—金色主图/补充图（SVG/PDF/600-dpi PNG/LZW-TIFF）。自动化审计
+  `12 passed`。
+- Figure 5 已按正文叙事重构：`(a)` 改为 C–Bio-context 二维投影（颜色为
+  `log10(local records + 1)`、点大小为任务支持 T），`(b)` 仅显示有观测的条件误差
+  单元格，`(c)` 主图仅保留外层测试的 Chemical/Bio-context/Joint 三条覆盖曲线，
+  validation 与 seed-disagreement 诊断移至补充图，`(d)` 明确强调“可靠性改善但无
+  严格分界”。全部主面板标签统一为带括号的 `(a)`–`(d)`。
+- 中英文 Methods、Results、Discussion、Conclusion、Figure 5 图注和 Table 2 已回填至
+  `三阶段版/论文初稿_v0.4_20260723/`；对应中英文支撑材料和双语绘图说明同步更新。
+  五份 DOCX 已通过 Microsoft Word 实际分页渲染和逐页视觉检查，未见截断、越界或乱码。
+
+## 2026-07-21 v1.2.47 scaffold/similarity-family 化学外推矩阵已启动
+
+- v1.2.47 回答与 v1.2.46 不同的问题：它检验面对未见结构族时，水相预训练相对从头
+  训练是否仍有增益，以及土壤 pTox 中间阶段是否增加额外价值；不能把该边界解释为
+  新 reference、新物种或随机插值性能。
+- 从锁定的 v1.2.44 M11 Stage-3 母集出发，RDKit 严格结构清洗后保留 `11,267`
+  条记录、`581` 个 canonical parent 和 `316` 个结构 component；`3,932` 条无有效
+  有机结构记录被排除并完整审计。最终 train/validation/test 为
+  `7,322/1,651/2,294` 条和 `189/61/66` 个 structure component。
+- component 由 exact canonical parent、相同非空 Murcko scaffold，以及任意直接 Morgan
+  radius-2/2048-bit Tanimoto `>=0.65` 的边联合而成。三侧 canonical、scaffold、
+  component、aggregate、result 和 test 身份交集均为 0；跨侧最大 Tanimoto 为
+  `0.6364`，严格低于阈值。
+- 4,096 个原始哈希候选均因低样本 `ICx_Growth` 支持不足而未通过。模型训练前按预注册
+  规则，对最接近门槛的 64 个候选执行 prediction-blind 的完整 component 约束修复；
+  54 个修复候选通过，最终 seed 为 `20261729`，4 次 component 移动已写入审计。
+- Stage 1/2 进一步排除与目标 validation/test canonical、scaffold 或 Morgan
+  Tanimoto `>=0.65` 的源域结构，并核对 aggregate/result/test 身份。最终保留水相
+  `130,045` 条、土壤 pTox `6,455` 条；源域到留出目标的最大 Tanimoto 为
+  `0.6471`，结构和身份交集均为 0。
+- 划分契约 hash 为
+  `5acc398a4bc9215fa4972511156106e1f0461f9ff1b7a6ef13cd25fd884cc755`。
+  本地/远端定向与回归测试为 `20 passed`；M00、M10、M11U 三条 1-epoch smoke
+  于 `2026-07-21T10:40:41+08:00` 全部通过。
+- 正式矩阵为 M00、M10、M11U × seeds `42/2042/3407/8417`，Stage 3 均为
+  `freeze=none` 的全参数统一学习率微调，显式 validation 用于 early stopping，test
+  仅最终报告。正式运行于 `2026-07-21T10:40:50+08:00` 启动，两个 GPU 作业并发；
+  控制日志为 `outputs/logs/v1_2_47_scaffold_family_gate_20260721_101811.log`。
+- 完成后按 test structure component 做 20,000 次配对 bootstrap，并以 `±0.01` MAE
+  判断 M10 与 M11U 的实际等效性。`ECx_Population` 与 `ICx_Growth` 为预注册低支持
+  任务，只报告任务级 MAE/RMSE，不报告不稳定的任务级 R2。
+
+## 2026-07-20 v1.2.45 统计审计与 v1.2.46 reference-group 正式矩阵完成
+
+- v1.2.45 在固定的 `3,042` 条 v1.2.44 测试记录上完成了 `20,000` 次配对
+  reference-component cluster bootstrap；测试集包含 `917` 个 reference 连通分量。
+  M10 相对严格 M00 的 MAE 差为 `-0.03345`，95% CI
+  `[-0.04289, -0.02427]`，确认水相预训练增益稳定。
+- M11U 相对 M10 的 MAE 差为 `-0.00111`，95% CI
+  `[-0.00717, 0.00496]`，完整落入预设的 `±0.01` 实际等效区间；当前固定随机边界下，
+  土壤 pTox 中间阶段没有具有实际意义的附加增益。M11U 与 v1.2.40 X0_molar
+  的 MAE 差为 `+0.00052`，95% CI `[-0.00143, 0.00247]`，复现一致。
+- Scale-Mol 相对 Scale-Mass 的 MAE 差为 `-0.00562`；其 95% CI
+  `[-0.01150, 0.00001]` 跨过 0 且略超出 `±0.01` 等效界限，因此仅保留为小幅、
+  不确定的技术差异。完整输入相对 Molecule-only/Context-only 的 MAE 改善均有明确的
+  reference-cluster bootstrap 支持。
+- v1.2.46 将同一 reference 以及多 reference 记录形成的传递连通分量严格置于同一侧，
+  锁定 18 个任务和 `9,809/2,516/2,874` 条 Stage-3 train/validation/test；对应
+  reference component 数为 `854/217/291`。三侧 reference、component、aggregate、
+  result 和 test 标识的交集均为 0。为隔离外层 validation/test，Stage 1/2 共排除
+  `459` 条具有重叠 reference 的源域记录。
+- 拆分契约 hash 为
+  `ef2b521a422b683c0faf94599e1e223ccc4b517debc47916f2e9056f88c33a97`；
+  M00、M10、M11U 三条路由分别锁定 `15,199`、`260,200`、`272,214` 条记录。
+  本地与远端定向协议测试均为 `34 passed`，三条路线的 1-epoch smoke gate 于
+  `2026-07-20T19:39:23+08:00` 全部通过。
+- 正式矩阵为 M00、M10、M11U × seeds `42/2042/3407/8417`，共 12 个单元；
+  于 `2026-07-20T22:30:34+08:00` 全部完成，12 份 manifest 和 predictions 均齐全。
+  外层 test 全程未用于 stopping 或模型选择；控制日志为
+  `outputs/logs/v1_2_46_reference_group_gate_20260720_185905.log`。
+- reference-group test（`n=2,874`）四种子逐行集成结果为：M00 R2 `0.1710`、RMSE
+  `1.2092`、MAE `0.8986`；M10 R2 `0.2302`、RMSE `1.1652`、MAE `0.8649`；
+  M11U R2 `0.2243`、RMSE `1.1697`、MAE `0.8668`。对应任务中心化 R2 为
+  `0.1240/0.1866/0.1804`。
+- M10 相对 M00 提高 R2 `0.0593`、降低 MAE `0.0337`，并在 `14/18` 个任务上降低
+  MAE，说明水相预训练的迁移贡献可延伸至新 reference 边界。M11U 相对 M10 的 R2
+  降低 `0.0059`、MAE 增加 `0.0019`，仅在 `8/18` 个任务上降低 MAE；土壤 pTox
+  中间阶段在该边界下仍未显示附加优势。
+- v1.2.46 只检验面对新研究来源/实验条件的 reference-group 边界，不等同于
+  scaffold、化学家族或新物种外推。三条路线的绝对性能均明显低于 v1.2.44 随机切分，
+  表明研究来源/实验条件异质性构成重要泛化边界；但因两次测试记录组成不同，不能把
+  数值差直接解释为纯粹的 reference-disjoint 因果惩罚。
+
+## 2026-07-20 v1.2.44 第二层核心因果矩阵完成，继续锁定 v1.2.40 主线
+
+- 当前土壤 `mol/kg` 三阶段分支的唯一目标参照为 `v1.2.40 X0_molar`。E/G 系列只保留
+  历史记录，不进入 v1.2.44 的拆分、阈值、checkpoint、缓存、初始化或最终汇总。
+- 兼容性复核确认，问题不是 E/G 模型污染，而是历史 `D_molar` 与固定评价边界不兼容：
+  旧运行将 `12157` 条 Stage 3 开发记录合并为 train 后再用 seed `17073` 内部分验证，
+  v1.2.40 主线边界则是显式 train/validation `9724/2433`、seed `42`。因此旧结果已从
+  B1 排除，并在完全相同的 Stage 3 train/validation/test 上重新训练严格 M00 四种子。
+- 训练引擎已修正显式 `epochs=0` 被默认轮数覆盖的问题，并只在“Stage 1 轮数为 0 且
+  存在下游训练阶段”时允许空 Stage 1；普通训练仍保持缺少 Stage 1 即报错的 fail-closed
+  行为。相关本地与远端测试均为 `28 passed`。
+- 固定 Stage 3 边界为 18 个任务、`9724/2433/3042` 条 train/validation/test；M00、
+  M10、M01、M11 的 boundary hash 均为
+  `a2febaa7ac4679c6f273a50210315a69118490c4e38b887e4f72958bfbc2ff24`。
+  M00 assignment hash 为
+  `0ff581c18803f2ee24b47bc054e7f1c0fca6a18dfd5bc23e380fbeb5121d7360`。
+- 7 类新增训练（M00、M10、M01、M11F、M11U、Context-only、Molecule-only）共
+  `28/28` 个正式单元完成，远端有 28 份 manifest 和 28 份 predictions；控制器于
+  `2026-07-20T16:41:54+08:00` 输出 `[matrix_complete]`。M11U 对 v1.2.40 主线的集成
+  复现差异仅为 R2 `-0.00024`、MAE `+0.00052`。
+- B1 四种子逐行集成：M11U 为 R2 `0.7153`、MAE `0.5447`；M10 为
+  `0.7154/0.5458`，说明土壤 pTox 中间适配的整体净增益很小；M01 为
+  `0.6701/0.5879`，说明水相大样本预训练是主要迁移来源；严格 M00 为
+  `0.6801/0.5792`，完整迁移相对从头训练将 MAE 降低 `0.0346`。完整迁移在
+  `15/18` 个任务上降低 MAE，并非只帮助小样本任务：大任务的任务均值增益反而更高。
+- 冻结 trunk 的 M11F 为 R2 `0.3521`、MAE `0.8830`，显著弱于全参数微调 M11U，且
+  解冻在 `18/18` 个任务上均降低 MAE；当前证据明确支持继续采用 v1.2.40 的全参数
+  Stage 3 微调，而不是完全冻结 trunk。
+- B2 集成结果：Mean baseline 的 within-task R2 为 `-0.0050`，Context-only 为
+  `0.2997`，Molecule-only 为 `0.4924`，Full 为 `0.6817`。Full 明显优于
+  Context-only，证明模型解释了任务内部的分子毒性差异，而非只识别任务均值。
+- B3 在共同 mg/kg 尺度上，Scale-Mol/Scale-Mass 的集成 R2 分别为
+  `0.6855/0.6794`，MAE 为 `0.5441/0.5498`；molar-basis 优势较小但存在。优势主要
+  出现在 MW 上半区（Q3/Q4 ΔMAE `+0.0152/+0.0092`），但逐行增益与 logMW 的
+  相关仅 `r=0.0424`，任务 MW 跨度相关为 `r=-0.0348`，不支持强单调 MW 机制。
+- 最终中文结果已同步到本地
+  `实验汇总/第二层核心因果实验矩阵_v1_2_44/统一汇总_中文`；远端源目录为
+  `outputs/experiments/第二层核心因果实验矩阵_v1_2_44/统一汇总_中文`。
 
 ## 2026-07-19 v1.2.41 完成，v1.2.42 E 系列 OOF 融合已启动
 
@@ -8,9 +201,10 @@
   R2 `0.6907`、MAE `0.5536`；S1/S2/S3 的 R2 分别为 `0.6171/0.6164/0.6175`，
   MAE 分别为 `0.6339/0.6346/0.6381`。三项均未同时改善 R2 与 MAE，因此没有
   扩展种子，也没有用测试集挑选候选。
-- 该结果说明当前瓶颈不是 stage 3 轮数不足；将 trunk 从冻结改为全量解冻会明显
-  遗忘前两阶段表征，SWA 与 0.7 Huber + 0.3 MSE 未能修复。后续保留 v1.2.40
-  `X0_molar` 冻结 trunk 的三阶段模型，不再继续同类 full-unfreeze 调参。
+- 该结果说明当前瓶颈不是 stage 3 轮数不足。口径复核后确认 v1.2.40
+  `X0_molar` 本身已是 Stage 3 全参数微调；v1.2.41 同时改变训练轮数、学习率分组、
+  SWA 或混合损失，因此其退化不能单独归因于“从冻结改为解冻”。后续以
+  v1.2.40 参数作为目标复现，并另设真正的 `heads_only` 冻结对照。
 - v1.2.42 E 系列只在已完成的 Direct 与 Transfer 基模型预测上学习轻量组合：
   E0 为 Transfer ensemble 锚点，E1 为受约束线性融合，E2 为上下文门控，E3 为
   有界残差头。基模型结构、前两阶段路由、目标尺度和外层 random 8:2 测试集均不变。
@@ -1904,3 +2098,64 @@ python -m qsar_tl.cli run-baseline --config configs\experiment.example.yaml --db
 - Tracked summary: `docs/v1_2_42_e_series_oof_summary.md` and
   `docs/v1_2_42_e_series_validation_metrics.csv`. Remote raw summary:
   `outputs/experiments/v1_2_42_e_series_summary`.
+
+## 2026-07-23 多维训练支持度正文图与统计审计包
+
+- 已在 `三阶段版/AD/` 完成正文 Figure、Figure S1–S10、统计审计表、
+  双语图题图注、数据来源说明和整包验收脚本；所有图均输出
+  PNG/TIFF/PDF/SVG，raster 为 600 dpi，SVG 保留可编辑文字。
+- 分析边界为固定 M10 四种子 prediction-level ensemble，原生目标尺度
+  `neg_log10_mol_kg`，不重新训练模型，也未修改
+  `analysis/applicability_domain/ad_rule_locked.json`。
+- 外层测试集共 3,042 条：支持度可计算 2,289 条，支持度不可计算 753 条；
+  后者单独审计，未并入最低支持组。C 使用 Stage-3 训练集中非同一
+  canonical parent 的最近结构类似物支持度，exact-parent occurrence
+  只在 panel (a2) 表达。
+- 正文 `S_joint_min = min(C, B, T)` 相对任务内随机排序的 test
+  task-balanced AURC 差为 `0.005127`，reference-component cluster
+  bootstrap 95% CI 为 `[-0.026898, 0.036651]`，未显示稳定的低误差富集。
+- 最高与最低验证集分位联合支持层的 task-balanced normalized MAE 差为
+  `-0.026105` 个 task-IQR 单位，95% CI 为
+  `[-0.101137, 0.037490]`；连续 Spearman `rho=0.011972`，bootstrap
+  95% CI 为 `[-0.038461, 0.063141]`。联合支持未建立统计上得到支持的
+  二元预测误差边界。
+- Bio-context support 单独排序的 task-balanced AURC 差为 `-0.036222`
+  （95% CI `[-0.065377, -0.001298]`），提示较低误差富集；该结果是
+  支持排序关联，不是联合应用域边界或因果证据。
+- 支持度不可计算组的 test task-balanced normalized MAE 为 `0.258052`，
+  低于可计算组的 `0.307797`，进一步说明“缺失支持”不能解释为“最低支持”
+  或自动不可信。
+- 图形叙事统一为 multidimensional training support：panel 标签为
+  `(a1)`、`(a2)`、`(b)`、`(c)`、`(d)`；不使用 reliable/unreliable
+  或 inside/outside AD 的硬性视觉边界。
+- 中英文正文、支撑材料和双语绘图说明已同步回填为 `v0.5 AD revision`，
+  交付件位于 `三阶段版/AD/manuscript_backfill/`，原始 `v0.4` DOCX
+  保留未覆盖。五个 DOCX 均已通过 Word 转 PDF 的逐页渲染检查，共
+  46 页，未见截断、重叠或异常分页。
+
+## 2026-07-24 M10 四种子随机五折与 M10–M00 学习曲线完成
+
+- v1.2.52 已完成 15 个新增单元，并与 v1.2.51 的 seed=3407 五个折合并；
+  最终矩阵为 4 seeds × 5 folds = 20 个单元。五折 assignments 未改变，
+  每个种子的 15,199 条目标记录均 exact-once OOF。
+- 四种子逐行预测集成后的五折 OOF 指标为 R2 `0.690203`、RMSE
+  `0.780621`、MAE `0.561950`；四个单种子 OOF 指标的均值±SD 为
+  R2 `0.669906±0.010273`、RMSE `0.805715±0.012529`、MAE
+  `0.582087±0.009648`。这是 row-random 五折稳健性证据，不是 scaffold
+  外推结果。
+- v1.2.54 的 32 个新增 M10/M00 学习曲线单元全部完成；10/25/50/75%
+  为固定 v1.2.44 row-random 8:2 外层测试集内的严格嵌套 Stage-3
+  train/valid 子集，100% 复用 v1.2.44，所有档位 test 均为相同 3,042 条。
+- M10 在 10/25/50/75/100% 的四种子集成 R2 为
+  `0.346249/0.482510/0.596409/0.659845/0.715435`，M00 为
+  `0.315554/0.450483/0.559197/0.629637/0.680111`。
+- 20,000 次任务分层逐行配对 bootstrap 在所有档位均支持 M10 的 MAE
+  优势；M00−M10 MAE benefit 分别为
+  `0.020277/0.024839/0.030073/0.023561/0.033448`，95% CI 均高于 0。
+  但低数据量 benefit 未显著大于 100% benefit，10% 与 75% 反而显著
+  较小。因此论文可表述为“水相预训练在低数据量下仍提供稳健增量收益”，
+  不表述为“增强目标数据效率”或“数据越少收益越大”。
+- 机器可读结果与边界说明已回填
+  `docs/m10_evaluation_boundary_ledger.csv`、
+  `docs/m10_evaluation_boundary_ledger.md` 和
+  `docs/experiment_registry.csv`。

@@ -1,0 +1,108 @@
+schema_version: 1
+random_seed: 20260723
+
+analysis_boundary:
+  primary_route: M10
+  baseline_route: M00
+  seeds: [42, 2042, 3407, 8417]
+  target_name: neg_log10_mol_kg
+  target_family: solid_neglog_mol_kg
+  reference_split: fixed_v1_2_44_random_outer_boundary
+  stage3_boundary_sha256: a2febaa7ac4679c6f273a50210315a69118490c4e38b887e4f72958bfbc2ff24
+
+identity:
+  stable_record: stage_sample_v1_sha256_of_aggregate_medium_target_name_target_family
+  task: model_head
+  unique_chemical: canonical_parent_when_available_else_audited_raw_chemical_identity
+
+chemical:
+  parent_rule: largest_organic_fragment_uncharged_nonisomeric
+  radius: 2
+  n_bits: 2048
+  top_k: 5
+  candidate_similarity_thresholds: [0.40, 0.50, 0.60, 0.65, 0.70, 0.80]
+  threshold_operator: greater_than_or_equal
+  neighbor_count_unit: unique_canonical_parent
+  structure_unavailable_value: null
+
+taxonomy:
+  formal_rule_field: tax_support_same_task
+  global_field_use: concept_figure_and_descriptive_summary
+  levels: [species, genus, family, order, class, higher, unseen]
+  display_scores:
+    species: 1.00
+    genus: 0.85
+    family: 0.70
+    order: 0.55
+    class: 0.40
+    higher: 0.25
+    unseen: 0.00
+
+context:
+  fields:
+    - effect_level_x
+    - duration_bin_h
+    - organism_lifestage
+    - media_type
+    - habitat_labels
+    - organism_habitat
+  excluded_fields:
+    primary_medium: derived_medium_summary_redundant_with_media_and_habitat_fields
+    target_basis: constant_in_stage3
+    effect_family: fully_determined_by_task_head
+  k_neighbors_primary: 5
+  k_neighbors_sensitivity: [1, 5, 10]
+  numeric_scaling: training_q05_q95
+  duration_transform: log1p
+  field_weighting: equal
+  numeric_missing_pair_policy: both_missing_zero_one_missing_one
+  categorical_missing_policy: semantic_missing_as_explicit_state
+  semantic_missing_tokens: ['', na, n/a, nr, not reported, unknown, <missing>]
+  same_task_only: true
+  context_support_thresholds: [0.50, 0.60, 0.70, 0.80]
+  maximum_context_missing_fraction_candidates: [0.20, 0.40, 0.60]
+
+task_support:
+  percentile_method: average_rank_across_18_tasks
+  index: minimum_of_log_record_log_chemical_log_species_percentiles
+  tier_cutpoints: [0.25, 0.50, 0.75]
+  chemical_identity: canonical_parent_or_audited_fallback
+  species_identity: normalized_latin_name
+
+local_support:
+  taxonomy_thresholds: [family, genus, species]
+  n_thresholds: [1, 3, 5, 10, 20]
+  display_transform: log10_n_plus_1
+
+calibration:
+  split: validation
+  selection: pareto_elbow_with_directional_stability
+  high_coverage_target: [0.25, 0.50]
+  high_plus_moderate_coverage_target: [0.65, 0.80]
+  minimum_tier_rows: 100
+  minimum_task_tier_rows_for_direction: 15
+  require_high_subset_of_moderate: true
+  test_target_access_during_selection: forbidden
+
+evaluation:
+  split: test
+  metrics: [r2, within_task_r2, rmse, mae, median_ae, p90_ae]
+  prediction_sd_ddof: 1
+  nae_denominator: stage3_training_task_iqr_then_sd_if_iqr_zero
+
+figure:
+  backend: python
+  journal_style: Environmental_Science_and_Technology
+  final_width_mm: 183
+  dpi: 600
+  font: Arial
+  palette_reference: user_supplied_blue_teal_gold_surface
+  colors:
+    pale_green: '#dfead0'
+    teal: '#75c3c8'
+    blue: '#3f86b9'
+    slate: '#738988'
+    gold: '#f1c84b'
+    threshold_gray: '#cfd6dc'
+    reliable_green: '#90ad98'
+    low_gray: '#b8bec3'
